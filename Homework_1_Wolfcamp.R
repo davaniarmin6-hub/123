@@ -1,21 +1,15 @@
 # ============================================================================
+# Spatial statistics 2026-2027
+# Professor: Dr. Lasinio
+# Student: Mojtaba Alinejad
 # HOMEWORK 1 | WOLFCAMP DATA | PARTS 1 AND 2
-# Spatial statistics: prompts, spatial structure and interpolation
 # ============================================================================
-# HOW TO RUN
-# 1. Open this file in RStudio.
-# 2. If necessary, run the following line once:
-#    install.packages(c("geoR", "gstat", "MBA", "sp"))
-# 3. Click Source. All figures and tables go into "homework1_results" in
-#    your current working directory. Use getwd() to find that folder.
 #
 # This file contains my prompts, code, results and discussion together.
-# The explanations are comments, so they can be read without running R.
-# The code recalculates the results; the comments describe the checked run.
 # Checked with R 4.5.0, geoR 1.9-6, gstat 2.1-6, MBA 0.1-3 and sp 2.2-0.
 # The cross-validation loops can take a few minutes to finish.
-# AI assistance: ChatGPT/Codex. The prompts below document the worked example;
-# Part 1 is not a transcript of two separate AI conversations.
+# In RStudio, the figures appear in the Plots pane. Use its Previous arrow
+# to see earlier figures; none of the figures is saved as an image file.
 #
 # CONTENTS
 # Part 1: Bad/good prompts, exploratory analysis, results and discussion.
@@ -69,12 +63,11 @@ dir.create(out, showWarnings = FALSE)
 # The calculation is valid; the prompt's framing and requested conclusion
 # are weak. A variogram by itself does not justify a definitive yes/no.
 v_bad <- geoR::variog(wolfcamp, messages = FALSE)
-png(file.path(out, "01_bad_prompt_variogram.png"),
-    width = 1400, height = 950, res = 150)
+par(mfrow = c(1, 1))
 plot(v_bad, pch = 19, xlab = "Distance (km)",
      ylab = expression("Semivariance (" * m^2 * ")"),
      main = "Minimal analysis: raw Wolfcamp semivariogram")
-dev.off()
+
 
 # 1B. My analysis for the good prompt ---------------------------------------
 # Source for units and description: help("wolfcamp", package = "geoR").
@@ -96,8 +89,6 @@ write.csv(dat, file.path(out, "wolfcamp_data.csv"), row.names = FALSE)
 quartile <- cut(dat$head, quantile(dat$head, seq(0, 1, 0.25)),
                 include.lowest = TRUE, labels = FALSE)
 palette <- c("#2166AC", "#67A9CF", "#FDAE61", "#B2182B")
-png(file.path(out, "02_data_exploration.png"),
-    width = 1600, height = 1400, res = 150)
 par(mfrow = c(2, 2), mar = c(4.2, 4.2, 3, 1))
 plot(dat$x, dat$y, asp = 1, pch = 19, col = palette[quartile],
      xlab = "X coordinate (km)", ylab = "Y coordinate (km)",
@@ -112,7 +103,7 @@ lines(lowess(dat$x, dat$head), col = "#B2182B", lwd = 2)
 plot(dat$y, dat$head, pch = 19, col = "#365A73",
      xlab = "Y coordinate (km)", ylab = "Head (m)", main = "Head versus Y")
 lines(lowess(dat$y, dat$head), col = "#B2182B", lwd = 2)
-dev.off()
+
 
 # Explicit bins: 12 equal-width intervals up to half the maximum distance.
 # Longer lags are omitted here because they are less local and can be
@@ -161,8 +152,6 @@ write.csv(results, file.path(out, "numerical_results.csv"), row.names = FALSE)
 write.csv(data.frame(null_semivariance_m2 = null_statistics),
           file.path(out, "permutation_statistics.csv"), row.names = FALSE)
 
-png(file.path(out, "03_good_prompt_diagnostics.png"),
-    width = 1700, height = 800, res = 150)
 par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
 plot(v_good, pch = 19, xlab = "Distance (km)",
      ylab = expression("Semivariance (" * m^2 * ")"),
@@ -177,7 +166,7 @@ hist(null_statistics, breaks = 35, col = "#D9EAF1", border = "white",
 abline(v = observed, col = "#B2182B", lwd = 2)
 legend("topleft", legend = sprintf("Observed = %.1f; p = %.4f", observed, p_value),
        col = "#B2182B", lwd = 2, bty = "n", cex = 0.8)
-dev.off()
+
 
 print(checks)
 print(round(results, 6))
@@ -406,9 +395,7 @@ write.csv(grid, file.path(out, "part2_grid_20x20.csv"), row.names = FALSE)
 # Both maps use the SAME colour scale, so their colours can be compared.
 map_colours <- hcl.colors(100, "YlOrRd", rev = TRUE)
 colour_range <- range(grid$IDW, grid$MBA)
-png(file.path(out, "04_interpolation_maps.png"),
-    width = 1700, height = 850, res = 150)
-layout(matrix(1:3, nrow = 1), widths = c(1, 1, 0.17))
+layout(matrix(1:3, nrow = 1), widths = c(1, 1, 0.4))
 par(mar = c(4.5, 4.2, 3.5, 1))
 for (method in c("IDW", "MBA")) {
   image(grid_x, grid_y, matrix(grid[[method]], nrow = 20),
@@ -420,16 +407,14 @@ for (method in c("IDW", "MBA")) {
   lines(dat$x[hull], dat$y[hull], lty = 2)
   mtext("20 x 20 grid; dashed line = observation hull", side = 3, cex = 0.65)
 }
-par(mar = c(4.5, 0.5, 3.5, 4))
+par(mar = c(3, 0.5, 2, 2.5))
 colour_levels <- seq(colour_range[1], colour_range[2], length.out = 100)
 image(c(0, 1), colour_levels, matrix(rep(colour_levels, each = 2), nrow = 2),
       col = map_colours, axes = FALSE, xlab = "", ylab = "")
 axis(4, las = 1, cex.axis = 0.8)
 mtext("Head (m)", side = 3, cex = 0.8)
-dev.off()
 
-png(file.path(out, "05_tuning_and_validation.png"),
-    width = 1600, height = 800, res = 150)
+
 par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
 plot(final_tuning$scores, type = "b", pch = 19,
      xlab = "IDW power p", ylab = "Leave-one-out RMSE (m)",
@@ -444,7 +429,7 @@ points(dat$head, cv_mba, pch = 17, col = "#B2182B")
 abline(0, 1, lty = 2)
 legend("topleft", legend = c("IDW", "Multilevel B-splines"),
        col = c("#2166AC", "#B2182B"), pch = c(16, 17), bty = "n")
-dev.off()
+
 
 # 2E. Numerical results -----------------------------------------------------
 cat("\nPART 2: RESULTS\n")
