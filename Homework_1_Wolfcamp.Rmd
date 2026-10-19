@@ -187,6 +187,168 @@ The map shows higher heads towards the southwest and lower heads towards the nor
 
 I conclude that the RAW data show strong spatial structure. I have not shown that dependence remains after removing the broad trend. The good prompt improves how I check and interpret the result; its advantage is not simply that it produces a longer answer.
 
+## 1D. Recorded AI responses and critical comparison
+
+### How these responses were recorded
+
+I added this section after receiving the professor's feedback. The two responses below were generated directly by ChatGPT/Codex on 19 October 2026, using the exact prompts already shown in Part 1. They are new responses for this revision, rather than a recovered transcript of the original preparation of the homework. Each response is reproduced in full between its start and end markers.
+
+Both responses were produced in the same ongoing conversation. The AI already had access to the report, its numerical results and the professor's feedback. Therefore, this is a documented comparison of these two responses, not an independent experiment showing that the prompt alone caused the differences. The original analyses in Sections 1A–1C remain the worked analyses of the two prompts.
+
+The R code in the response blocks is displayed with `eval=FALSE` to keep the AI record separate from the existing calculations when knitting the report. Both response code blocks were checked separately in R by the AI assistant. The student-style evaluations below were also drafted with AI assistance; they are presented separately from the AI responses being evaluated.
+
+### Exact bad prompt
+
+> "Confirm that the Wolfcamp data are spatially dependent. Use R to draw a variogram and give me a yes-or-no answer."
+
+### AI response to the bad prompt
+
+**Start of AI response — ChatGPT/Codex**
+
+Yes, the raw Wolfcamp measurements show evidence of spatial structure: the empirical semivariogram increases with distance, meaning that nearby measurements tend to be more similar than measurements farther apart.
+
+```{r ai-bad-response-code, eval=FALSE}
+# Install geoR first if needed: install.packages("geoR")
+data("wolfcamp", package = "geoR")
+v <- geoR::variog(wolfcamp, messages = FALSE)
+par(mfrow = c(1, 1))
+plot(v, pch = 19,
+     xlab = "Distance (km)", ylab = "Semivariance (m^2)",
+     main = "Raw Wolfcamp semivariogram")
+```
+
+This gives a graphical indication, not a formal significance test. A broad spatial trend can also produce an increasing raw semivariogram, so this result does not establish that spatial dependence remains after removing that trend.
+
+**End of AI response**
+
+### My evaluation of the bad-prompt response
+
+The response gives a reasonable first description of the data. A semivariogram is appropriate for continuous measurements at spatial locations, and the explanation of increasing semivariance is correct: larger distances tend to correspond to larger squared differences. The code ran successfully in the separate R check and produced the raw variogram.
+
+The answer is more cautious than the wording of my prompt. It explicitly mentions trend and says that the graph is not a significance test. Therefore, I should not describe this particular AI response as ignoring trend or proving residual dependence. It did neither of those things. The opening "Yes" is still easy to read too strongly, so I would retain the narrower wording "evidence of spatial structure in the raw measurements."
+
+Its main weakness is the lack of supporting checks. It does not inspect missing values or duplicate locations, explain the default distance bins, report pair counts, or discuss the assumptions needed to interpret a pooled variogram as a description of a stationary spatial process. The code is runnable, but the reader receives little guidance on assessing its sensitivity to these choices. It gives no numerical p-value or fitted range, so there is no unsupported numerical claim to correct.
+
+### Exact good prompt
+
+> "Using wolfcamp from the geoR package in R, assess whether there is evidence of spatial structure in the measured piezometric heads. First inspect the data structure, sample size, missing values, duplicate locations, and coordinate/measurement units. Identify the spatial data type and justify an appropriate diagnostic rather than applying a list of methods automatically. Provide runnable R code, a map, and an empirical semivariogram with explicit distance bins and pair counts. Explain what patterns would and would not support spatial dependence. If you use a statistical comparison, state its null hypothesis and assumptions, and set a seed for reproducibility. Check whether a broad change in the mean across space could affect the raw-data interpretation; flag this limitation without requiring a full trend model. Report only numerical results actually calculated and conclude cautiously, distinguishing raw spatial structure from residual dependence."
+
+### AI response to the good prompt
+
+**Start of AI response — ChatGPT/Codex**
+
+I would use an empirical semivariogram because Wolfcamp contains continuous piezometric-head measurements at spatial locations. The `geoR` documentation gives coordinates in kilometres and heads in metres. These coordinates should be treated as Cartesian coordinates, not longitude and latitude. The data have 85 observations, with no missing values or duplicate locations.
+
+I first inspect the measurements and their spatial arrangement. Then I use 12 equal-width distance bins up to half the maximum pair distance and report how many pairs contribute to each bin. This distance limit is a diagnostic choice, not an estimated correlation range.
+
+For an additional comparison, I calculate the mean semivariance of the closest 10% of location pairs and compare it with randomly shuffled heads. Under the null hypothesis, heads are exchangeable across the fixed locations: reassigning the observed heads to those locations should not systematically change the statistic. Small observed values indicate that nearby measurements are unusually similar under this null.
+
+```{r ai-good-response-code, eval=FALSE}
+# Install geoR first if needed: install.packages("geoR")
+data("wolfcamp", package = "geoR")
+str(wolfcamp)
+# Units and data description: help("wolfcamp", package = "geoR")
+d <- data.frame(x = wolfcamp$coords[, 1],
+                y = wolfcamp$coords[, 2], head = wolfcamp$data)
+checks_ai <- data.frame(
+  observations = nrow(d),
+  missing_values = sum(is.na(d)),
+  duplicate_locations = sum(duplicated(d[c("x", "y")]))
+)
+print(checks_ai)
+print(summary(d))
+stopifnot(all(is.finite(as.matrix(d))),
+          checks_ai$duplicate_locations == 0)
+
+# Map and simple checks for a broad change in head across space.
+group <- cut(d$head, quantile(d$head, seq(0, 1, 0.25)),
+             include.lowest = TRUE, labels = FALSE)
+colours <- c("#2166AC", "#67A9CF", "#FDAE61", "#B2182B")
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(d$x, d$y, asp = 1, pch = 19, col = colours[group],
+     xlab = "X (km)", ylab = "Y (km)", main = "Wolfcamp locations")
+legend("topright", c("Lowest", "Q2", "Q3", "Highest"),
+       pch = 19, col = colours, cex = 0.65, bty = "n")
+hist(d$head, xlab = "Head (m)", main = "Head distribution")
+plot(d$x, d$head, xlab = "X (km)", ylab = "Head (m)")
+lines(lowess(d$x, d$head), col = "red")
+plot(d$y, d$head, xlab = "Y (km)", ylab = "Head (m)")
+lines(lowess(d$y, d$head), col = "red")
+
+# Empirical semivariogram with explicit distance bins and pair counts.
+D <- as.matrix(dist(d[c("x", "y")]))
+ij <- which(lower.tri(D), arr.ind = TRUE)
+distances <- D[ij]
+limit <- max(distances) / 2
+v <- geoR::variog(wolfcamp, max.dist = limit,
+                  breaks = seq(0, limit, length.out = 13),
+                  messages = FALSE)
+print(data.frame(bin_centre_km = v$u, semivariance_m2 = v$v,
+                 pairs = v$n))
+par(mfrow = c(1, 1))
+plot(v, pch = 19, xlab = "Distance (km)", ylab = "Semivariance (m^2)",
+     ylim = c(0, max(v$v) * 1.15))
+text(v$u, v$v, labels = v$n, pos = 3, cex = 0.7)
+
+# Nearby pairs are selected using coordinates alone.
+cutoff <- unname(quantile(distances, 0.10))
+near <- ij[distances <= cutoff, , drop = FALSE]
+near_semivariance <- function(z) {
+  mean((z[near[, 1]] - z[near[, 2]])^2) / 2
+}
+observed <- near_semivariance(d$head)
+RNGkind("Mersenne-Twister", "Inversion", "Rejection")
+set.seed(2026)
+B <- 9999
+shuffled <- replicate(B, near_semivariance(sample(d$head)))
+p_value <- (1 + sum(shuffled <= observed)) / (B + 1)
+print(c(cutoff_km = cutoff, nearby_pairs = nrow(near),
+        observed_semivariance_m2 = observed,
+        shuffled_mean_m2 = mean(shuffled), p_value = p_value))
+```
+
+The numerical results already calculated in this analysis are: the distance limit is 218.10 km; nearby pairs are at most 53.92 km apart; and their observed mean semivariance is 2,429.51 m², compared with a shuffled mean of 34,724.07 m². There are 357 nearby pairs. The one-sided Monte Carlo p-value is 0.0001, the minimum attainable with 9,999 permutations and this correction. It should not be reported as zero.
+
+The increasing semivariogram supports a distance-related pattern in the raw measurements. A roughly flat semivariogram would offer less evidence of such a pattern at the distances examined, although it would not prove independence. Pair counts help assess how much information supports each bin; the pairs are not independent because they can share observations.
+
+There are two important limits to the interpretation. First, the map and coordinate plots show a broad spatial change in head. A changing mean contributes to the raw squared differences, so the raw semivariogram cannot isolate residual dependence. Interpreting it as a single stationary variogram would require assumptions about the mean and the dependence structure; pooling directions also assumes that an average across directions is informative. Second, the permutation null is stronger than simply assuming independent observations with possibly different means. A changing spatial mean can also cause rejection of exchangeability. The code shuffles entire vectors of heads, not individual pair differences.
+
+My conclusion is that the raw Wolfcamp measurements show strong spatial structure. These calculations do not establish dependence remaining after trend removal. A later analysis would need to model the broad trend and examine the residuals before making that more specific claim.
+
+**End of AI response**
+
+### My evaluation of the good-prompt response
+
+This answer is easier to check because it identifies the data type and units, inspects the observations, and explains its choice of a semivariogram. Its code ran successfully in the separate R check. The bin counts and the numerical results agreed with the calculations already reported in Part 1. This supports those specific numerical claims; it does not mean that every statistical interpretation should be accepted automatically.
+
+The variogram interpretation is correct. The answer explains both the increasing pattern observed here and what a flat pattern would mean. It also correctly separates a broad spatial trend from dependence that might remain after removing that trend. I therefore accept its conclusion about raw spatial structure, while keeping its limit on claims about residual dependence.
+
+The explanation of the permutation comparison is especially useful. It states exchangeability across locations as the null hypothesis and explains why a changing mean can violate it. It does not treat the 357 nearby pairs as 357 independent observations. It also describes 0.0001 as a Monte Carlo p-value rather than an exact probability or proof of a stationary spatial model.
+
+The response still leaves choices that deserve judgment. The 12 bins, the half-distance limit and the closest 10% of pairs are reasonable diagnostic settings, but they are not the only possible settings. Their sensitivity has not been investigated here. It also does not fit a trend model or test residual dependence, which is consistent with the limits of the prompt. I would not extend its conclusion beyond what it actually checked.
+
+### Comparison of the actual responses
+
+| Point I checked | Response to the bad prompt | Response to the good prompt |
+|:--|:--|:--|
+| Method and data type | Uses an appropriate semivariogram but gives little justification. | Identifies continuous point-referenced data and explains why a semivariogram is suitable. |
+| R code | Runnable short code using default variogram settings. | Runnable code with data checks, a map, explicit bins, pair counts and a reproducible permutation comparison. |
+| Variogram interpretation | Correctly links rising semivariance to larger differences at longer distances. | Gives the same interpretation and also explains why a flat variogram would not prove independence. |
+| Trend and residual dependence | Explicitly mentions trend and does not claim to have tested residual dependence. | Develops the distinction and explains its consequences for both diagnostics. |
+| Assumptions | Says the graph is not a significance test, but gives little further detail. | Explains exchangeability, the effect of a changing mean and the limits of pooling distances and directions. |
+| Numerical claims | Gives no p-value or fitted range. | Gives numerical values that were checked against executed R calculations. |
+| Conclusion | The initial "Yes" needs to be read together with the later qualification. | Directly limits the conclusion to raw spatial structure. |
+
+The weak prompt did not produce a completely wrong answer. It even produced a useful warning about trend, which I should acknowledge. The advantage of the good-prompt response is that more of its reasoning and assumptions can be checked. The difference is therefore about the support for the conclusion, not just the length of the answer. Since these responses share the earlier conversation context, I cannot claim that a fresh AI session would always show the same difference.
+
+## 1E. How AI and I contributed
+
+The initial prompts' ideas, statistical workflow, R code structure, cross-validation procedure, and first draft of the explanations were generated with assistance of AI. I reviewed the analysis, made corrections to parts of the R code and comments, improved the models to the final version, ran and checked the work, and edited the report for submission.
+
+To make this division clearer, AI assistance covered the initial implementation of the variograms, permutation comparison, IDW tuning, nested cross-validation, MBA predictions, maps and the first written interpretation. My contribution included reviewing that work and correcting parts of the code and comments. I also requested the changes to figure display and the R Markdown format, which the AI assistant implemented. The two newly recorded responses and the first draft of their evaluations in Section 1D were generated by the AI for this revision.
+
+I do not describe the original workflow as something I developed independently, and I do not claim to have corrected a particular statistical error unless I actually did so. The comments about trend and residual dependence are limits of the analysis, not evidence that the AI originally made that mistake. I remain responsible for the report I submit.
+
 # Part 2: IDW and multilevel B-splines
 
 **My prompt for Part 2**
