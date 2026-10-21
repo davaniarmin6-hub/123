@@ -18,6 +18,27 @@ geometry: margin=0.8in
 ---
 
 ```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+r_series <- paste(R.version$major,
+                  strsplit(R.version$minor, ".", fixed = TRUE)[[1]][1],
+                  sep = ".")
+user_library <- file.path(tools::R_user_dir("Homework2", "data"), r_series)
+dir.create(user_library, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(user_library, .libPaths()))
+needed <- c("gstat", "sp", "knitr", "rmarkdown", "tinytex")
+missing <- needed[!vapply(needed, requireNamespace, logical(1),
+                          quietly = TRUE)]
+if (length(missing) > 0) {
+  install.packages(missing, lib = user_library)
+}
+unavailable <- needed[!vapply(needed, requireNamespace, logical(1),
+                              quietly = TRUE)]
+if (length(unavailable) > 0) {
+  stop("Package installation failed: ", paste(unavailable, collapse = ", "))
+}
+if (knitr::is_latex_output() && !nzchar(Sys.which("xelatex"))) {
+  tinytex::install_tinytex()
+}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE,
                       fig.align = "center", fig.width = 7,
                       fig.height = 4.5, out.width = "100%")
@@ -25,28 +46,10 @@ options(width = 78)
 fmt <- function(x, digits = 2) formatC(x, digits = digits, format = "f")
 ```
 
-This report studies annual rainfall in 1970. I first check the observations,
-station locations and environmental relationships. Then I choose the IDW power
-by cross-validation and predict rainfall at the supplied land-grid locations.
-The code and explanations are together, so the results can be checked directly.
-
-# How to run this file {-}
-
-Keep this file beside the `data` folder containing `RainData.RData` and
-`AllGrids.RData`. Open it in RStudio and click **Knit to PDF**. The plots appear
-inside the report. The analysis does not write separate plot files or CSV files;
-the final predictions remain in the R object `prediction_grid` when the chunks
-are run interactively. Knitting creates the report and its temporary supporting
-files. HTML output is also available from the Knit menu.
-
-Install the packages below once, if needed. PDF compilation also needs a LaTeX
-installation; `tinytex::install_tinytex()` is one option.
-
-```{r install-instructions, eval=FALSE}
-install.packages(c("gstat", "sp", "knitr", "rmarkdown", "tinytex"))
-# Only if a LaTeX installation is not already available:
-tinytex::install_tinytex()
-```
+In this homework, I study rainfall in 1970. I first look at the station
+locations and the relationship between rainfall and elevation. Then I use
+cross-validation to choose the IDW power and make a rainfall map on the
+supplied grid. I explain my choices and discuss what I can learn from the results.
 
 # Data checks and choice of year
 
@@ -56,8 +59,6 @@ I load each file into its own environment. This avoids replacing my objects or
 random-number seed with objects stored in an R workspace.
 
 ```{r load-data}
-needed <- c("gstat", "sp", "knitr")
-stopifnot(all(vapply(needed, requireNamespace, logical(1), quietly = TRUE)))
 rain_file <- new.env()
 grid_file <- new.env()
 invisible(load("data/RainData.RData", envir = rain_file))
@@ -75,14 +76,14 @@ file_check <- data.frame(
 knitr::kable(file_check)
 ```
 
-**The two uploaded files do not describe the same prediction task.** The objects
+I found that **the two files do not belong to the same prediction task**. The objects
 in `AllGrids.RData` contain bathymetry, salinity and sea temperature, with years
 1995–2010. Their coordinates are named `X` and `Y`; the rainfall file uses
 `XUTM` and `YUTM`. I cannot safely combine them just by changing column names or
 units. Their date ranges also do not overlap.
 
-Fortunately, `RainData.RData` already includes the supplied land grid `grid`,
-with 1,005 locations and elevation. It is the concatenation of `Basquota32`
+I found the matching land grid, `grid`, inside `RainData.RData`.
+It has 1,005 locations and their elevations. It joins `Basquota32`
 and `Calabriaquota32`. I use this existing grid, without creating a replacement
 regular grid. The objects `Bas` and `Cal` provide regional outline coordinates
 for the maps; `grid.int` is their concatenated outline, not the prediction grid.
@@ -127,8 +128,8 @@ stopifnot(nrow(rain_all) == nrow(rain_file$dati),
 ```
 
 This changes `r sum(fix_rows)` annual labels, all belonging to the same station.
-The original uploaded file is preserved. I do not automatically reclassify
-every point near a regional boundary, because a simple outline can be imprecise.
+I keep the original file unchanged. I do not change the label of every station
+near a regional boundary, because the supplied outline may not be exact.
 
 ## Why I chose 1970
 
@@ -167,14 +168,15 @@ with 1970: repeated years at the same station are not independent spatial sites.
 
 The response is `totanno`, the annual rainfall total. `Quota` is elevation;
 region is a geographical grouping, while coordinates describe location.
-The files contain no formal units or CRS metadata. I interpret rainfall as
+I could not find a full description of the units or coordinate system in the
+files. I interpret rainfall as
 **mm**, elevation as **m**, and the supplied UTM-style coordinates as **m**,
-consistent with the variable names and magnitudes. These are working unit
-assumptions, not metadata supplied by the file. I divide both coordinate axes
+based on the variable names and the sizes of the values. I treat these units
+as assumptions because they are not stated in the files. I divide both coordinate axes
 by 1,000 for distances in km and retain their supplied common coordinate system.
-I do not assign an unverified EPSG code or calculate Euclidean distances in
-longitude/latitude. A uniform change from metres to kilometres leaves IDW
-weights unchanged after normalization.
+I do not assign an EPSG code without knowing the exact coordinate system.
+I calculate distances using the supplied projected coordinates. Changing both
+axes from metres to kilometres does not change the final IDW weights.
 
 # Exploratory analysis
 
@@ -276,25 +278,25 @@ knitr::kable(as.data.frame(table(dat$Nome_Regione)),
              col.names = c("Region", "Stations"))
 ```
 
-Rainfall has a moderate positive association with elevation
+I find a moderate positive relationship between rainfall and elevation
 (Pearson correlation **`r fmt(cor(dat$Quota, dat$rain),3)`**). Higher sites tend
-to receive more rain, but there is considerable scatter. Rainfall decreases
+to receive more rain, but the points are quite spread out. Rainfall decreases
 somewhat with easting, while its simple linear association with northing is
 close to zero. This does not mean that northing is irrelevant after accounting
 for other variables, or that there is no nonlinear spatial pattern.
 
-The regional boxplots are descriptive. Only two stations remain labelled Puglia,
+I use the regional boxplots to describe this sample. Only two stations remain labelled Puglia,
 so I cannot use that small group to describe rainfall across the whole region.
-These correlations are associations, not causal effects. Ordinary correlation
-tests would also need care because observations may be spatially dependent.
+These correlations do not show that one variable causes another. I would also
+be careful with ordinary correlation tests because nearby stations may be related.
 
 ## Trend, Gaussianity and the empirical variogram
 
 I compare three simple trend models: elevation alone, coordinates alone, and
 elevation plus coordinates. For each linear model, the leave-one-out residual
 is `residual / (1 - leverage)`. This gives its LOOCV RMSE without a long fitting
-loop. The trends are exploratory; the requested final estimator remains ordinary
-IDW of rainfall, not regression plus interpolation of residuals.
+loop. I use these trends to understand the data. For the final map, I still use
+ordinary IDW on rainfall rather than adding a regression model to IDW.
 
 ```{r trend-models}
 trend_models <- list(
@@ -311,8 +313,8 @@ emp_variogram <- function(z) {
 }
 residual_variograms <- lapply(trend_models,
                               function(m) emp_variogram(residuals(m)))
-# Same exponential model and starting rule for each residual variogram.
-# These are descriptive weighted least-squares fits, not likelihood fits.
+# I use the same exponential model and starting rule for each variogram.
+# I fit these curves with weighted least squares to compare their nuggets.
 nugget_fits <- lapply(seq_along(trend_models), function(j) {
   s2 <- var(residuals(trend_models[[j]]))
   gstat::fit.variogram(residual_variograms[[j]],
@@ -336,17 +338,18 @@ log_trend <- lm(log(rain) ~ Quota + x + y, data = dat)
 The combined trend has the lowest CV RMSE among these three candidates
 (**`r fmt(trend_table$CV_RMSE_mm[3])` mm**), but elevation alone has a lower
 fitted nugget. I therefore do not choose a trend by minimizing the nugget
-alone. The combined model is a useful exploratory compromise: it improves the
-prediction score and includes a simple broad spatial pattern, while leaving
-substantial unexplained variation. Its adjusted R-squared is only
+alone. I use the combined model for the next checks because it improves the
+prediction score and allows the mean to change across the area. However, it
+still leaves a lot of variation unexplained. Its adjusted R-squared is only
 **`r fmt(summary(trend)$adj.r.squared,3)`**.
 
-The nugget describes the fitted semivariance as separation approaches zero.
-It can reflect measurement error and variation below the sampling resolution.
-Here it is an extrapolation from an empirical variogram, not a directly
-measured error variance. Its value depends on the covariance family, lag bins
-and trend. A smaller nugget is not automatically a better model, and the trend
-comparison itself is exploratory selection rather than independent validation.
+I read the nugget as the fitted semivariance at a distance close to zero.
+It can reflect measurement error and differences over distances smaller than
+those between my stations. I estimate it from the fitted curve, so it is not
+a direct measurement of error. It depends on the model, distance groups and
+trend. This is why I do not assume that the smallest nugget gives the best
+model. I also use the same data to compare these trends, so this comparison
+is not a separate test of the chosen trend.
 
 ```{r gaussian-diagnostics, fig.width=9, fig.height=7, fig.keep="last"}
 par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
@@ -362,11 +365,11 @@ qqnorm(residuals(log_trend), main = "Log-rainfall trend residuals",
 qqline(residuals(log_trend), col = "#B2182B")
 ```
 
-The raw data and original-scale trend residuals depart from a straight Q-Q line.
-The log-rainfall residuals look closer to it. A normal-looking marginal
-distribution would still not establish a Gaussian spatial process. I use the
-plots as diagnostics rather than treating a normality test as decisive under
-spatial dependence.
+In the Q-Q plots, I see that the raw rainfall and its trend residuals move
+away from a straight line. The log-rainfall residuals look closer to the line.
+Still, a normal-looking distribution by itself does not show that the whole
+spatial process is Gaussian. I use these plots as checks, rather than relying
+only on a normality test when nearby observations may be related.
 
 ```{r variogram-plots, fig.width=9, fig.height=7, fig.keep="last"}
 v_raw <- emp_variogram(dat$rain)
@@ -403,17 +406,19 @@ semivariance **`r fmt(v_res$gamma[1],1)`**, compared with
 **`r fmt(v_raw$gamma[1],1)` mm squared** for the raw observations.
 
 A rising raw variogram may reflect a changing mean as well as spatial dependence.
-The residual plots help separate these issues, but do not prove stationarity or
-isotropy. The lower panels repeat the spatial diagnostic on the log scale;
-their semivariances cannot be compared numerically with the upper panels.
+I use the residual plots to help separate these effects. They do not prove that
+the spatial behaviour stays the same everywhere (stationarity) or in every
+direction (isotropy). In the lower panels I repeat the check after taking logs.
+The units have changed, so I cannot directly compare their semivariance values
+with those in the upper panels.
 
 I retain the original response scale for IDW because it estimates rainfall in
 its original units and does not require Gaussianity or a fitted covariance
 model. The log analysis above is diagnostic only. If I used log rainfall for
 prediction, I would need to apply that choice consistently during validation
 and mapping, and assess the predictions after appropriate back-transformation.
-Simply exponentiating a predicted log value does not generally estimate the
-original-scale conditional mean.
+Simply taking the exponential of a predicted log value does not usually give
+the mean rainfall on the original scale.
 
 # Choosing the IDW power with cross-validation
 
@@ -468,8 +473,8 @@ abline(v = best_p, lty = 2, col = "#B2182B")
 The selected power is **p = `r best_p`**, with tuning RMSE
 **`r fmt(min(tuning$table$RMSE))` mm**. For comparison, the common default
 `p = 2` gives **`r fmt(tuning$table$RMSE[tuning$table$p == 2])` mm** under the
-same validation scheme. Nearby candidate scores should be read from the curve;
-this is not an exactly known physical parameter.
+same validation scheme. I also look at the nearby scores on the curve, because
+the selected value is the best of my tested values, not an exact physical constant.
 
 ## A separate check of prediction performance
 
@@ -501,9 +506,10 @@ knitr::kable(data.frame(Fold = 1:5, Selected_p = fold_p))
 ```
 
 The outer IDW RMSE is **`r fmt(outer_scores["IDW", "RMSE"])` mm**, and MAE is
-**`r fmt(outer_scores["IDW", "MAE"])` mm**. These describe predictions for
-held-out stations after tuning inside each training fold. They are more useful
-for discussing predictive performance than the minimum tuning error alone.
+**`r fmt(outer_scores["IDW", "MAE"])` mm**. These show how well I predict
+stations that were left out after choosing p inside each training fold.
+I use them to judge prediction accuracy rather than relying only on the
+lowest error from choosing p.
 The training-mean baseline has RMSE
 **`r fmt(outer_scores["Training_mean", "RMSE"])` mm**, so IDW reduces RMSE by
 about **`r fmt(100 * (1 - outer_scores["IDW", "RMSE"] / outer_scores["Training_mean", "RMSE"]),1)`%** in this comparison.
@@ -528,19 +534,21 @@ plot(outer_prediction, outer_prediction - dat$rain,
 abline(h = 0, col = "#B2182B", lty = 2)
 ```
 
-IDW averages nearby observations and can smooth local extremes. The prediction
-plot helps reveal this limitation, which a single RMSE cannot show. Random
-folds may leave a nearby station in training, so this validation mainly describes
-prediction among an existing network. It may be optimistic for large unsampled
-areas. Spatially separated folds and repeated partitions would be useful
-extensions; I have not presented these as completed analyses.
+In the prediction plot, I can see how averaging nearby observations can smooth
+high and low rainfall values. A single RMSE does not show this clearly.
+With random folds, a nearby station may stay in the training data. This means
+my score is most useful for predicting between stations in this network.
+It may make prediction in large areas without stations look easier than it is.
+In further work, I could leave out whole spatial areas or repeat the random
+splits to see how much the results change.
 
 # Prediction on the supplied land grid
 
 I now use all 189 stations and the power chosen from the full-data LOOCV. I
 predict at all 1,005 supplied land-grid locations. Their elevations remain in
 the result, but ordinary IDW uses coordinates and rainfall, not elevation.
-The EDA therefore identifies an important limitation of this simple estimator.
+This is one limitation I noticed in the analysis: elevation is related to
+rainfall, but ordinary IDW does not use it directly.
 
 ```{r grid-prediction}
 prediction_grid$rain_idw <- idw_predict(dat, prediction_grid, best_p)
@@ -582,17 +590,18 @@ legend("bottomleft", c("Inside hull", "Outside hull", "Stations"),
        bty = "n", cex = 0.7)
 ```
 
-The rainfall map uses the same colour breaks as the station rainfall map.
-The squares mark the actual supplied grid locations; I do not fill gaps using
-a second, unreported interpolation method. Predicted rainfall ranges from
+I use the same colour breaks for the predicted and observed rainfall maps.
+Each square shows a supplied grid location. I leave the gaps between the
+points visible. My predicted rainfall ranges from
 **`r fmt(min(prediction_grid$rain_idw),1)` to
 `r fmt(max(prediction_grid$rain_idw),1)` mm**.
 
 There are **`r sum(!prediction_grid$inside_hull)` grid points outside the
 station convex hull**, out of `r nrow(prediction_grid)`. I retain and flag them.
-Their estimates extend beyond the sampled spatial envelope and need more care.
-Even inside the hull, a point may be poorly supported: the hull is not a measure
-of prediction uncertainty. The largest distance from a grid point to its nearest
+These points lie outside the area enclosed by the outermost stations, so I
+would be more careful with their predictions. A point inside this boundary
+can also be far from any station; being inside does not guarantee accuracy.
+The largest distance from a grid point to its nearest
 station is **`r fmt(max(prediction_grid$nearest_km),1)` km**.
 
 The wettest predicted patches are local rather than a simple increase from
@@ -608,8 +617,8 @@ prediction intervals; the coverage map should not be interpreted as one.
 
 ## Weak prompt
 
-> Use the rainfall data in R to show that rainfall is spatially dependent.
-> Use IDW with p = 2 and draw a prediction map on the grid.
+> I have rainfall data to analyse in R. Show that the rainfall is spatially
+> dependent, use IDW with p = 2, and draw a rainfall map on the grid.
 
 **AI response, recorded for this report:**
 
@@ -621,36 +630,38 @@ prediction intervals; the coverage map should not be interpreted as one.
 > before interpolation. Using p = 2 gives a conventional starting choice, not a
 > power selected by cross-validation.
 
-**My assessment:** The response gives a reasonable starting method and avoids
-claiming that a variogram proves dependence. However, it does not complete the
-homework: it gives no actual tuning procedure, no data-specific correction and
-no runnable analysis. The prompt also asks for confirmation rather than an open
-assessment and fixes a parameter that the assignment asks me to choose. In my
-executed comparison, p = 2 has LOOCV RMSE
+**My assessment:** I think this answer is a useful starting point. It correctly
+says that a variogram alone does not prove spatial dependence. However, it
+does not give me code to run, choose p using the data, or fix the station label.
+My prompt also asks the AI to confirm a result instead of checking whether it
+is supported. I fixed p at 2 even though the homework asks me to choose it.
+In the calculation above, p = 2 has LOOCV RMSE
 `r fmt(tuning$table$RMSE[tuning$table$p == 2])` mm, while the selected p has
 `r fmt(min(tuning$table$RMSE))` mm. This comparison uses the same observations
 and folds, but both numbers are tuning results, not separate test results.
 
 ## Good prompt
 
-> Using the uploaded RainData.RData and AllGrids.RData, first inspect the
-> objects, years, response, descriptors, coordinate units and available grids.
-> Choose one rainfall year using completeness and station coverage rather than
-> its prediction score; explain the rule. Check missing values and duplicate
-> locations. Locate the Puglia-labelled station that belongs to Calabria using
-> the supplied spatial information, correct its label and retain its records.
-> Draw a station map and examine annual rainfall against elevation, location
-> and region. Examine the distribution, simple trends and raw/residual
-> variograms with explicit distance classes and pair counts. Explain what
-> these checks can and cannot establish; consider predictive score and nugget
-> together when discussing trends. Do not require normality just to use IDW.
-> Write simple runnable R code using gstat::idw to choose p by cross-validation,
-> stating the candidate powers and error score. Keep tuning separate from any
-> reported assessment of the selected procedure. Predict at the supplied grid
-> that actually matches the rainfall data, explain any mismatch between files,
-> and flag locations with weak spatial support. Give only calculated numerical
-> results, use cautious conclusions and include the code and figures in an
-> R Markdown report that compiles to PDF.
+> I have RainData.RData and AllGrids.RData for my rainfall homework in R.
+> Please first check what is in the files, which years are available, and
+> which grid matches the rainfall data. Check the units, missing values and
+> repeated locations. Choose one year based on complete records and station
+> coverage, rather than which year gives the lowest error, and explain why.
+> One station labelled Puglia belongs to Calabria. Check its location, fix
+> the label and keep its measurements. Draw a station map and help me examine
+> how rainfall changes with elevation, location and region. Look at the
+> distribution, simple trends and variograms before and after removing a
+> trend. Show the distance groups and pair counts, and explain the limits of
+> these checks. When comparing trends, consider both the prediction error
+> and the nugget. Explain whether normality is needed for IDW.
+> Use simple R code with gstat::idw to choose p by cross-validation. State
+> which values of p are tested and which score chooses the best one. If you
+> assess the chosen method, keep the test observations out of parameter
+> selection. Make the rainfall map on the matching supplied grid and mark
+> places where there are few nearby stations or where prediction extends
+> beyond the station area. Only report numbers that were actually calculated.
+> Put the code, plots and clear explanations together in an R Markdown report
+> with a PDF version, and avoid conclusions stronger than the results support.
 
 **AI response, recorded for this report:**
 
@@ -680,46 +691,45 @@ and folds, but both numbers are tuning results, not separate test results.
 > areas, and there is no grid accuracy score without observed grid rainfall.
 > The runnable implementation and calculated results are in the report above.
 
-**My assessment:** This response addresses the actual files rather than assuming
-that every uploaded grid is suitable. It distinguishes trend from residual
-dependence, explains the limits of the variogram, and avoids imposing a Gaussian
-model on IDW. It also connects the tuning method to an explicit score and keeps
-outer test observations out of parameter selection. These choices make the
-analysis easier to reproduce and check. It is still conditional on the assumed
-measurement units and common projected coordinates; the files do not supply
-complete metadata. More words alone would not solve those limitations.
+**My assessment:** I find this answer more useful because it checks the actual
+files and notices that one grid does not match the rainfall data. It separates
+a broad trend from dependence that remains after removing the trend. It also
+explains that a variogram does not prove stationarity and that IDW does not
+need normally distributed data. I can check how p is selected and see that
+the outer test observations are not used to choose it. These are the main
+improvements for me, rather than just getting a longer answer. I still have to
+remember that the units and coordinate system are not fully described in the
+files. A detailed prompt cannot provide information that is missing.
 
-The responses above were generated by ChatGPT/Codex during preparation of this
-report, in the same conversation and with access to the data inspection. They
-are newly recorded responses, not an independent or blinded prompt experiment.
-The weak response is not deliberately made statistically incorrect. The code
-above is the implemented good-response workflow; the fixed-p comparison was
-calculated within that code, rather than presented as a separate historical
-AI run.
+I include these AI responses from the same conversation used to prepare the
+report. The AI already had access to the data checks, so this is not a comparison
+of two independent conversations. I have kept the weak answer's useful points
+as well as its limits. The code above follows the good prompt's approach.
+The p = 2 result comes from the same comparison table, not from a separate
+earlier AI experiment.
 
-# Final discussion and reproducibility
+# What I learned
 
-For this year, elevation helps describe rainfall differences, while a simple
-trend does not explain everything. Cross-validation gives a transparent choice
-of IDW power, and the final map uses the existing rainfall grid. I would treat
-predictions near sparse areas and outside the station hull with particular care.
-The selected year, ordinary IDW's omission of elevation, one random outer
-partition, and incomplete metadata limit how widely I can generalize the result.
+From this analysis, I learned that elevation helps explain rainfall differences,
+but a simple trend still leaves a lot unexplained. Cross-validation gives me
+a reason for choosing p rather than just using the default. I would be more
+careful with predictions far from the stations or outside their boundary.
+I have studied only one year, used IDW without elevation, and assessed it with
+one random five-fold split. These choices, along with the missing information
+about units and coordinates, limit how far I can extend my conclusions.
 
-**AI assistance and responsibility.** AI assisted with the prompts, statistical
-workflow, R code, explanations and report preparation. The code was executed
-in the working R environment to produce the reported results. The student-style
-discussion is also an AI-assisted draft. I remain responsible for reviewing
-the assumptions, checking the code and understanding the conclusions before
-submission. This statement does not claim student edits or checks that have
-not yet been made for Homework 2.
+**My use of AI.** I used AI assistance for the prompts, analysis plan, R code
+and draft explanations. This also includes help with the wording of my
+discussion. The results in this report come from running the code. I remain
+responsible for checking the work and understanding the choices before I
+submit it.
 
-The functions used here are documented in `help("idw", package = "gstat")`,
+The R help pages for the functions in my analysis are `help("idw", package = "gstat")`,
 `help("variogram", package = "gstat")`,
 `help("fit.variogram", package = "gstat")`, and
-`help("point.in.polygon", package = "sp")`. In particular, the variogram fits
-here use weighted least squares, and IDW is deterministic; neither is Bayesian
-analysis. No Bayesian or likelihood-based spatial model is fitted in this task.
+`help("point.in.polygon", package = "sp")`. I use weighted least squares to
+fit the variogram curves. IDW then calculates weighted averages. I have not
+fitted a Bayesian or likelihood-based spatial model in this homework.
 
 ```{r package-versions}
 versions <- data.frame(

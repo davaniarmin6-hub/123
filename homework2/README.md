@@ -6,7 +6,11 @@
 
 On GitHub, open the file and use **Download raw file**. Alternatively, use the repository's **Code → Download ZIP** option and open its `homework2` folder. These files are on the **work** branch.
 
-Install `gstat`, `sp`, `knitr`, and `rmarkdown` if necessary. PDF knitting also needs LaTeX; install `tinytex` and run `tinytex::install_tinytex()` if you do not have LaTeX already. Click **Knit to PDF** in RStudio. The cross-validation loops take a few minutes.
+With R and RStudio installed, the Rmd automatically installs missing analysis packages and TinyTeX if PDF compilation needs it. An Internet connection is needed for downloads. Packages go into a user library, so the code does not need to write into the system R library.
+
+If even `rmarkdown` and `knitr` are missing, open `Build_Homework_2.R` and click **Source** first. It installs the packages, prepares PDF compilation, and builds the report. If a file-selection window appears, select `Homework_2_Rainfall.Rmd`. An Rmd cannot install its own rendering engine before that engine starts, which is why this small starter is included. The report itself contains no running instructions.
+
+Subsequent runs can use **Knit to PDF** in RStudio. The cross-validation loops take a few minutes. Windows and macOS normally use CRAN binary packages; Linux may also need system libraries for packages such as `sf`. Automatic downloads depend on network access and a supported R version. Installation on a separate clean PC has not been tested.
 
 The Rmd contains the code, plots, calculated results, explanations, weak/good prompts, recorded AI responses, and contribution disclosure. Figures appear in the compiled report; the analysis does not export separate plots or tables. To inspect predictions interactively, run the chunks and open `prediction_grid` in RStudio.
 
