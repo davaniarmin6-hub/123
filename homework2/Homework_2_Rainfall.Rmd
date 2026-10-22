@@ -2,7 +2,7 @@
 title: "Homework 2: Rainfall in southern Italy"
 author: "Mojtaba Alinejad"
 subtitle: "Spatial statistics 2026–2027 · Professor: Dr. Lasinio"
-date: "21 October 2026"
+date: "22 October 2026"
 output:
   pdf_document:
     toc: true
@@ -99,14 +99,14 @@ stopifnot(!anyNA(land_grid),
           !anyDuplicated(land_grid[c("XUTM", "YUTM")]))
 ```
 
-## Correcting the Puglia label
+## Correcting the regional labels
 
-The course hint identifies one Puglia label that should be Calabria. I check
-the three Puglia-labelled stations against the supplied Calabria outline.
-Only station **4367**, at approximately **38.55 N, 16.02 E**, is inside it.
-I correct that station's label across all years. I keep its coordinates,
-elevation and rainfall values unchanged. The other two Puglia-labelled stations
-remain in the dataset, and all stations in the chosen year enter the analysis.
+Following my professor's feedback, I assign stations **4085 and 4086 to
+Basilicata** and station **4367 to Calabria**. All three were originally
+labelled Puglia. My earlier check against the Calabria outline identified
+station 4367, at approximately 38.55 N, 16.02 E, but did not correct the other
+two labels. I now correct all three across every year. I keep all their
+observations, coordinates, elevations and rainfall values.
 
 ```{r correct-region}
 station_info <- unique(rain_all[c("ID", "Nome_Regione", "Lat10",
@@ -116,20 +116,27 @@ puglia$inside_Calabria <- sp::point.in.polygon(
   puglia$XUTM, puglia$YUTM,
   rain_file$Cal$XUTM, rain_file$Cal$YUTM
 ) > 0
-knitr::kable(puglia[c("ID", "Lat10", "Lon10", "inside_Calabria")],
+region_fix <- c("4085" = "Basilicata", "4086" = "Basilicata",
+                "4367" = "Calabria")
+stopifnot(setequal(puglia$ID, as.numeric(names(region_fix))),
+          puglia$ID[puglia$inside_Calabria] == 4367)
+puglia$Corrected_region <- unname(region_fix[as.character(puglia$ID)])
+knitr::kable(puglia[c("ID", "Lat10", "Lon10", "Corrected_region")],
              digits = 3)
-wrong_id <- puglia$ID[puglia$inside_Calabria]
-stopifnot(length(wrong_id) == 1, wrong_id == 4367)
 rain_all$Nome_Regione <- as.character(rain_all$Nome_Regione)
-fix_rows <- rain_all$ID == wrong_id
-rain_all$Nome_Regione[fix_rows] <- "Calabria"
+fix_rows <- rain_all$ID %in% as.numeric(names(region_fix))
+rain_all$Nome_Regione[fix_rows] <-
+  unname(region_fix[as.character(rain_all$ID[fix_rows])])
 stopifnot(nrow(rain_all) == nrow(rain_file$dati),
-          identical(rain_all$totanno, rain_file$dati$totanno))
+          identical(rain_all$totanno, rain_file$dati$totanno),
+          !any(rain_all$Nome_Regione == "Puglia"))
 ```
 
-This changes `r sum(fix_rows)` annual labels, all belonging to the same station.
-I keep the original file unchanged. I do not change the label of every station
-near a regional boundary, because the supplied outline may not be exact.
+This changes `r sum(fix_rows)` annual labels belonging to three stations.
+I keep the original file unchanged. For this revision, I reuse my earlier
+cross-validation results and rainfall predictions because IDW uses coordinates
+and rainfall, not the regional labels. The code below still shows the full
+calculation used to obtain those results.
 
 ## Why I chose 1970
 
@@ -183,8 +190,7 @@ axes from metres to kilometres does not change the final IDW weights.
 ## Station map and rainfall distribution
 
 ```{r map-functions}
-region_col <- c(Basilicata = "#377EB8", Calabria = "#E69F00",
-                Puglia = "#009E73")
+region_col <- c(Basilicata = "#377EB8", Calabria = "#E69F00")
 draw_outlines <- function() {
   lines(rain_file$Bas$XUTM / 1000, rain_file$Bas$YUTM / 1000,
         col = "grey50")
@@ -218,9 +224,9 @@ points(dat$x, dat$y, pch = 19, cex = 0.65,
        col = region_col[dat$Nome_Regione])
 legend("bottomleft", legend = names(region_col), col = region_col,
        pch = 19, bty = "n", cex = 0.75)
-i <- which(dat$ID == wrong_id)
+i <- match(as.numeric(names(region_fix)), dat$ID)
 points(dat$x[i], dat$y[i], pch = 1, cex = 1.7, lwd = 2)
-text(dat$x[i], dat$y[i], "4367", pos = 2, cex = 0.7)
+text(dat$x[i], dat$y[i], dat$ID[i], pos = c(2, 4, 2), cex = 0.7)
 map_frame("Observed rainfall, 1970")
 points(dat$x, dat$y, pch = 19, cex = 0.7, col = rain_colour(dat$rain))
 rain_legend()
@@ -229,7 +235,7 @@ rain_legend()
 The stations cover an elongated area, with more stations in Calabria than in
 Basilicata. Their spacing is uneven. This matters because IDW uses nearby
 observations, so the information available for prediction changes across the
-map. The circled station is the corrected record, not a removed observation.
+map. I circle and label all three stations whose regional labels I corrected.
 Both outlines are supplied with the rainfall data; they are not a complete
 administrative map of Italy.
 
@@ -285,8 +291,11 @@ somewhat with easting, while its simple linear association with northing is
 close to zero. This does not mean that northing is irrelevant after accounting
 for other variables, or that there is no nonlinear spatial pattern.
 
-I use the regional boxplots to describe this sample. Only two stations remain labelled Puglia,
-so I cannot use that small group to describe rainfall across the whole region.
+I use the regional boxplots to describe this sample. After the correction,
+I have **`r sum(dat$Nome_Regione == "Basilicata")` stations in Basilicata** and
+**`r sum(dat$Nome_Regione == "Calabria")` in Calabria**, with no stations left
+labelled Puglia. The groups have different sample sizes and station locations,
+so I do not treat their boxplots as a balanced comparison of the two regions.
 These correlations do not show that one variable causes another. I would also
 be careful with ordinary correlation tests because nearby stations may be related.
 
@@ -707,6 +716,12 @@ of two independent conversations. I have kept the weak answer's useful points
 as well as its limits. The code above follows the good prompt's approach.
 The p = 2 result comes from the same comparison table, not from a separate
 earlier AI experiment.
+
+I have kept these earlier prompts and AI responses as a record of that exchange.
+They mention the correction for station 4367 but miss the two Basilicata labels.
+Following my professor's feedback, I corrected stations 4085 and 4086 in this
+revised analysis as well. This is another point where the AI-assisted work
+needed correction.
 
 # What I learned
 

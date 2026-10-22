@@ -16,7 +16,9 @@ The Rmd contains the code, plots, calculated results, explanations, weak/good pr
 
 ## Input choice
 
-1970 is the earliest year tied for the largest number of complete station records (189). Station 4367 is relabelled from Puglia to Calabria in memory, without deleting measurements or modifying the original input file.
+1970 is the earliest year tied for the largest number of complete station records (189). Following the professor's correction, stations 4085 and 4086 are relabelled from Puglia to Basilicata, and station 4367 from Puglia to Calabria. All observations are retained and the original input file is unchanged. The revised sample has 40 Basilicata stations and 149 Calabria stations.
+
+The revised PDF reuses the previously verified cross-validation results and rainfall predictions. Regional labels are not inputs to IDW. The complete calculation code remains in the Rmd for reproducibility; knitting it normally will run that code again.
 
 `RainData.RData` contains both the rainfall observations and their supplied land grid (`grid`, 1,005 locations). `AllGrids.RData` contains marine descriptors for 1995–2010 and does not match the rainfall years (1970–1982). It is inspected and documented, but is not used as the rainfall prediction grid. Both original uploads are included for reproducibility.
 
