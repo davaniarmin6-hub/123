@@ -13,4 +13,8 @@ Internet access is needed for installation. Packages are installed into a user l
 
 The report has no running instructions inside it. Figures are embedded in the report, and the analysis does not export separate plot or CSV files. The main result objects are `selection`, `cv_scores` and `grid`.
 
-The analysis compares Gaussian ML fits for three trends and four covariance specifications. It favours fewer parameters among models within two AIC units, checks predictions with model selection repeated inside five training folds, and distinguishes the smooth-head prediction target from a new observed head. The prompt, recorded AI response and contribution disclosure are included.
+Based on the professor's feedback, the revised analysis compares three trends and four covariance specifications using the same five-fold cross-validation split. The lowest pooled RMSE selects the model, with MAE breaking exact ties. Gaussian ML still estimates the parameters; AIC is supporting evidence and does not filter or select candidates.
+
+A separate nested five-fold assessment repeats this predictive comparison inside each outer training set. It distinguishes the model-selection score from the outer assessment score, and the smooth-head prediction target from a new observed head. This takes longer than the original AIC-based comparison. Failed or nonconverged optimizer starts are counted; the analysis stops if a candidate has no converged fit.
+
+The revision uses the student's latest uploaded Rmd as its starting point. The original AI exchange is retained as historical material, with a new revision prompt, response and assessment explaining the corrected selection procedure.
