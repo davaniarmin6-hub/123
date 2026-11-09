@@ -1,0 +1,827 @@
+---
+title: "Homework 4: Rainfall prediction with likelihood kriging"
+author: "Mojtaba Alinejad"
+subtitle: "Spatial statistics 2026–2027 · Professor: Dr. Lasinio"
+date: "9 November 2026"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+  html_document:
+    self_contained: true
+    toc: true
+    number_sections: true
+fontsize: 10pt
+geometry: margin=0.8in
+---
+
+```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+r_series <- paste(R.version$major,
+  strsplit(R.version$minor, ".", fixed = TRUE)[[1]][1], sep = ".")
+user_library <- file.path(tools::R_user_dir("Homework4", "data"), r_series)
+dir.create(user_library, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(user_library, .libPaths()))
+needed <- c("geoR", "sp", "knitr", "rmarkdown", "tinytex", "codetools")
+missing <- needed[!vapply(needed, requireNamespace, logical(1),
+                        quietly = TRUE)]
+if (length(missing)) install.packages(missing, lib = user_library)
+stopifnot(all(vapply(needed, requireNamespace, logical(1), quietly = TRUE)))
+if (knitr::is_latex_output() && !nzchar(Sys.which("xelatex"))) {
+  tinytex::install_tinytex()
+}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE,
+  fig.align = "center", fig.width = 8, fig.height = 5,
+  out.width = "100%", cache.path = "Homework_4_cache/")
+options(width = 76)
+fmt <- function(x, digits = 1) formatC(x, digits = digits, format = "f")
+```
+
+# My question and data
+
+I want to predict annual rainfall at the supplied grid locations for **each
+year from 1970 to 1982**. I also want to show how uncertain those predictions
+are. I fit each year separately: I do not treat repeated measurements at the
+same station in different years as independent spatial locations.
+
+My main idea is simple. Elevation and location describe the broad rainfall
+pattern. Kriging then uses the similarity between nearby residuals to adjust
+that pattern. Maximum likelihood estimates the model parameters, while
+cross-validation helps me choose the model. This differs from IDW, which uses
+distance weights without fitting a probability model for the rainfall field.
+
+## Data checks and the matching grid
+
+```{r load-data}
+rain_file <- new.env()
+invisible(load("data/RainData.RData", envir = rain_file))
+rain <- rain_file$dati
+grid <- rain_file$grid
+years <- sort(unique(rain$anno))
+stopifnot(isTRUE(all.equal(grid,
+  rbind(rain_file$Basquota32, rain_file$Calabriaquota32),
+  check.attributes = FALSE)))
+
+# I correct the labels without removing any station or changing rainfall.
+region_fix <- c("4085" = "Basilicata", "4086" = "Basilicata",
+                "4367" = "Calabria")
+rain$Nome_Regione <- as.character(rain$Nome_Regione)
+fix_rows <- rain$ID %in% as.numeric(names(region_fix))
+rain$Nome_Regione[fix_rows] <-
+  unname(region_fix[as.character(rain$ID[fix_rows])])
+stopifnot(identical(rain$totanno, rain_file$dati$totanno),
+          nrow(rain) == nrow(rain_file$dati),
+          !any(rain$Nome_Regione == "Puglia"))
+
+fields <- c("ID", "anno", "XUTM", "YUTM", "Quota", "totanno")
+stopifnot(!anyNA(rain[fields]), !anyNA(grid), all(rain$totanno > 0),
+          !anyDuplicated(grid[c("XUTM", "YUTM")]))
+for (yr in years) {
+  d <- subset(rain, anno == yr)
+  stopifnot(!anyDuplicated(d$ID),
+            !anyDuplicated(d[c("XUTM", "YUTM")]))
+}
+
+# These fixed changes of units also apply to every validation fold.
+add_coordinates <- function(d) {
+  d$x <- d$XUTM / 1000
+  d$y <- d$YUTM / 1000
+  d$east <- (d$x - 1100) / 100
+  d$north <- (d$y - 4400) / 100
+  d$elev <- d$Quota / 1000
+  d
+}
+rain <- add_coordinates(rain)
+grid <- add_coordinates(grid)
+rain$rain <- rain$totanno
+annual <- split(rain, rain$anno)
+
+data_summary <- do.call(rbind, lapply(annual, function(d) {
+  data.frame(Year = d$anno[1], Stations = nrow(d),
+    Mean_mm = mean(d$rain), SD_mm = sd(d$rain),
+    Min_mm = min(d$rain), Max_mm = max(d$rain),
+    Cor_elevation = cor(d$rain, d$Quota))
+}))
+knitr::kable(data_summary, digits = 2, row.names = FALSE)
+```
+
+There are **`r nrow(rain)` annual observations**, with no missing values in
+the variables used here. All three corrected stations remain in the data.
+The matching land grid has **`r nrow(grid)` points** and an elevation at
+each point. It is already inside `RainData.RData`. The separately supplied
+`AllGrids.RData` belongs to a marine dataset from other years, so I do not
+use it for rainfall.
+
+As in Homework 2, I interpret rainfall as **mm**, elevation as **m**, and
+the supplied projected coordinates as **m**. These units are assumptions
+based on the names and values; the files do not contain complete metadata.
+I divide coordinates by 1,000 for distances in km and keep their common
+projected system. I do not assign an unverified EPSG code. The extra centring
+and scaling in `east`, `north` and `elev` help numerical fitting; distances
+still use `x` and `y` in km.
+
+Elevation is the environmental descriptor available at **both** stations
+and grid points. Latitude and longitude repeat location information, and
+the grid has no supplied regional factor. I therefore use elevation and
+the projected coordinates as model covariates. I use the corrected regions
+to describe the stations, not as an extra predictor.
+
+## Where are the stations?
+
+```{r map-tools}
+draw_outlines <- function() {
+  lines(rain_file$Bas$XUTM/1000, rain_file$Bas$YUTM/1000,
+        col = "grey45", lwd = 0.7)
+  lines(rain_file$Cal$XUTM/1000, rain_file$Cal$YUTM/1000,
+        col = "grey45", lwd = 0.7)
+}
+map_frame <- function(title) {
+  plot(grid$x, grid$y, type = "n", asp = 1,
+    xlim = range(c(grid$x, rain$x)), ylim = range(c(grid$y, rain$y)),
+    xlab = "Easting (km)", ylab = "Northing (km)", main = title)
+  draw_outlines()
+}
+region_col <- c(Basilicata = "#377EB8", Calabria = "#E69F00")
+```
+
+```{r station-overview, fig.width=9, fig.height=5.6}
+stations <- rain[!duplicated(rain$ID), ]
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+map_frame("Station locations")
+points(stations$x, stations$y, pch = 19, cex = 0.55,
+       col = region_col[stations$Nome_Regione])
+i <- match(as.numeric(names(region_fix)), stations$ID)
+points(stations$x[i], stations$y[i], pch = 1, cex = 1.5)
+text(stations$x[i], stations$y[i], stations$ID[i],
+     pos = c(2, 4, 2), cex = 0.65)
+legend("bottomleft", names(region_col), col = region_col,
+       pch = 19, bty = "n", cex = 0.7)
+map_frame("Supplied prediction grid")
+points(grid$x, grid$y, pch = 15, cex = 0.35, col = "#267A8A")
+points(stations$x, stations$y, pch = 1, cex = 0.3)
+legend("bottomleft", c("Grid", "Stations"), pch = c(15, 1),
+       col = c("#267A8A", "black"), bty = "n", cex = 0.7)
+```
+
+The stations are unevenly spaced along an elongated region. I expect
+different prediction uncertainty in dense and sparse parts of this region.
+The number of available stations changes by year, so I use that year's
+locations when checking the support of each prediction map.
+
+# Exploratory analysis before fitting
+
+```{r rainfall-by-year, fig.width=9, fig.height=4.4}
+par(mfrow = c(1, 2), mar = c(5, 4, 3, 1))
+boxplot(rain ~ anno, data = rain, las = 2, col = "#B9DCE5",
+        xlab = "Year", ylab = "Rainfall (mm)", main = "Annual distributions")
+plot(data_summary$Year, data_summary$Cor_elevation, type = "b",
+     ylim = c(0, 1), xlab = "Year", ylab = "Correlation",
+     main = "Rainfall and elevation", pch = 19, col = "#216681")
+abline(h = 0, col = "grey70")
+```
+
+Rainfall and elevation have a positive association in every year: the
+correlations range from **`r fmt(min(data_summary$Cor_elevation), 2)`** to
+**`r fmt(max(data_summary$Cor_elevation), 2)`**. This supports including
+elevation, but does not show a causal effect or explain all local variation.
+The annual boxplots also show that the rainfall distribution changes with
+the year. The highest observed station average is in
+**`r data_summary$Year[which.max(data_summary$Mean_mm)]`**
+(**`r fmt(max(data_summary$Mean_mm))` mm**), and the lowest is in
+**`r data_summary$Year[which.min(data_summary$Mean_mm)]`**
+(**`r fmt(min(data_summary$Mean_mm))` mm**).
+Changes in station coverage mean that these averages are not
+area-weighted regional rainfall totals or a formal time-trend analysis.
+
+```{r covariate-plots, fig.width=10, fig.height=8}
+par(mfrow = c(4, 4), mar = c(3, 3, 2, 0.5), mgp = c(1.7, 0.5, 0))
+for (d in annual) {
+  plot(d$Quota, d$rain, pch = 19, cex = 0.4, col = "#267A8A",
+       xlab = "Elevation (m)", ylab = "Rainfall (mm)",
+       main = as.character(d$anno[1]))
+  lines(lowess(d$Quota, d$rain), col = "#C45A33", lwd = 1.5)
+}
+```
+
+The smooth lines help me see the association without assuming it is exactly
+linear. I use a linear elevation term as an understandable starting model,
+and also consider a broad east–north trend. I do not add many polynomial
+terms just to improve an in-sample fit.
+
+## Distribution, trend and transformation
+
+```{r distribution-checks}
+skewness <- function(z) mean((z-mean(z))^3) / mean((z-mean(z))^2)^1.5
+distribution_check <- do.call(rbind, lapply(annual, function(d) {
+  raw_res <- resid(lm(rain ~ elev + east + north, data = d))
+  log_res <- resid(lm(log(rain) ~ elev + east + north, data = d))
+  data.frame(Year = d$anno[1], Raw_skew = skewness(d$rain),
+    Raw_residual_skew = skewness(raw_res),
+    Log_residual_skew = skewness(log_res))
+}))
+knitr::kable(distribution_check, digits = 2, row.names = FALSE)
+```
+
+The rainfall distributions are right-skewed. Removing a trend changes the
+distribution, and using log rainfall often helps, but not in every year.
+Skewness alone cannot establish Gaussianity. I therefore compare **raw and
+log rainfall models** using held-out predictions on the same mm scale, and
+show Q–Q diagnostics for the chosen models later. For a log model, the
+transformation is used in fitting, variograms, prediction and intervals;
+I return to mm only with the appropriate back-transformation.
+
+# Choosing and fitting the models
+
+## What the models mean
+
+For each year I use the spatial model
+
+\[
+T\{Y(s)\}=X(s)\beta+w(s)+\epsilon(s).
+\]
+
+Here, $Y(s)$ is annual rainfall and $T$ is either the identity or the
+natural logarithm. The trend $X(s)\beta$ describes the broad pattern.
+The zero-mean process $w(s)$ describes remaining spatial variation, and
+$\epsilon(s)$ has variance $\tau^2$, the nugget. I assume the two components
+are independent. The residual covariance is stationary and isotropic:
+it depends on distance, not on the absolute position or direction.
+
+I compare two trends: **elevation**, and **elevation plus east and north
+coordinates**. For each trend and response scale, I compare exponential,
+spherical and Matérn covariance with fixed $\kappa=1.5$. This gives
+**12 candidates per year**. The exponential allows a rougher field; the
+spherical reaches zero correlation at a finite distance; Matérn 1.5 allows
+a smoother field. Matérn 0.5 would repeat the exponential, so I do not add it
+as a separate candidate.
+
+All fits use **maximum likelihood**, not REML or Bayesian estimation.
+For each candidate, I look for the parameter values that make the observed
+spatial data most plausible under that model.
+The semivariogram for nonzero distance is
+$\gamma(h)=\tau^2+\sigma^2\{1-\rho(h)\}$, where $\sigma^2$ is the partial
+sill. The total sill is $\tau^2+\sigma^2$. I estimate the nugget rather than
+forcing the model to pass through every measured value.
+
+```{r candidates}
+trends <- list(Elevation = ~elev,
+               Elevation_xy = ~elev + east + north)
+candidates <- expand.grid(
+  Scale = c("Raw", "Log"), Trend = names(trends),
+  Covariance = c("exponential", "spherical", "matern"),
+  stringsAsFactors = FALSE)
+candidates$Model <- seq_len(nrow(candidates))
+knitr::kable(candidates[c("Model", "Scale", "Trend", "Covariance")],
+             row.names = FALSE)
+```
+
+## How I compare predictions
+
+I use **five-fold cross-validation within each year**. All candidates use
+the same split for that year. Each fit uses only the training stations;
+the held-out rainfall values are used only to score predictions. The
+random seeds are fixed, and no year contributes observations to another
+year's model.
+
+Because this homework asks for uncertainty intervals as well as a map,
+my primary criterion is the **95% interval score**, averaged over all
+held-out stations:
+
+\[
+IS_{0.05}=(u-l)+40(l-y)\,1(y<l)+40(y-u)\,1(y>u).
+\]
+
+This is a proper score for the central 95% interval. It penalises intervals
+that are too wide and intervals that miss the observation. Lower is better.
+Coverage and average width help explain the score, but coverage by itself
+is not a proper score: a very wide interval could cover almost everything.
+I select the lowest mean interval score. I also report **RMSE in mm** for
+the predictive mean, calculated from all held-out errors together. Squared
+error is a proper score for a predictive mean, and RMSE has the same ranking
+as mean squared error. RMSE breaks an exact interval-score tie. This makes
+interval quality the main objective, while still showing the cost in mean
+prediction accuracy. I do not change the selection rule between years.
+
+This distinction matters here: a raw Gaussian model can have a slightly
+smaller RMSE while giving negative lower limits for rainfall. I compare
+both scales, but I do not treat a tiny RMSE gain as enough evidence of
+better uncertainty estimates.
+
+These are **model-selection scores**. The best score can be optimistic
+because I use it to choose among 12 candidates. Unlike the separate nested
+assessment in Homework 3, I do not claim that this table is an independent
+assessment of the complete selection procedure. Random folds mainly assess
+interpolation among existing stations, not prediction across a large
+unsampled region. A spatially separated outer validation would answer a
+harder question.
+
+## Reusable fitting and prediction functions
+
+I repeat each likelihood fit from two starting range values and keep the
+converged fit with the higher likelihood. This reduces dependence on a
+single starting value, although it cannot prove a global maximum. Failed
+starts are counted; if neither start converges, the analysis stops rather
+than silently removing a model or station. I also inspect boundary estimates.
+
+```{r model-functions}
+design <- function(d, trend) {
+  geoR::trend.spatial(trends[[trend]], d)
+}
+
+fit_one <- function(d, candidate) {
+  z <- if (candidate$Scale == "Log") log(d$rain) else d$rain
+  g <- geoR::as.geodata(data.frame(x = d$x, y = d$y, z = z,
+    elev = d$elev, east = d$east, north = d$north), covar.col = 4:6)
+  X <- design(d, candidate$Trend)
+  s2 <- mean(lm.fit(X, z)$residuals^2)
+  fits <- lapply(c(20, 80), function(start) {
+    tryCatch(geoR::likfit(g, trend = trends[[candidate$Trend]],
+      cov.model = candidate$Covariance, kappa = 1.5, fix.kappa = TRUE,
+      ini.cov.pars = c(0.8*s2, start), nugget = 0.2*s2,
+      fix.nugget = FALSE, lambda = 1, fix.lambda = TRUE,
+      lik.method = "ML", limits = geoR::pars.limits(phi = c(0.5, 1500)),
+      messages = FALSE, control = list(maxit = 2000)),
+      error = function(e) NULL)
+  })
+  ok <- vapply(fits, function(m) {
+    !is.null(m) && is.finite(m$loglik) &&
+      m$info.minimisation.function$convergence == 0
+  }, logical(1))
+  if (!any(ok)) stop("No converged fit for this candidate.")
+  valid <- fits[ok]
+  fit <- valid[[which.max(vapply(valid, function(m) m$loglik, numeric(1)))]]
+  list(fit = fit, g = g, X = X, rejected = sum(!ok))
+}
+
+predict_one <- function(f, locations, candidate) {
+  p <- geoR::krige.conv(f$g,
+    locations = as.matrix(locations[c("x", "y")]),
+    krige = geoR::krige.control(type.krige = "OK", obj.model = f$fit,
+      trend.d = f$X, trend.l = design(locations, candidate$Trend),
+      micro.scale = 0),
+    output = geoR::output.control(signal = FALSE, messages = FALSE))
+  mu <- p$predict
+  v <- p$krige.var
+  stopifnot(all(is.finite(mu)), all(is.finite(v)), all(v > 0))
+  lower <- mu - qnorm(0.975)*sqrt(v)
+  upper <- mu + qnorm(0.975)*sqrt(v)
+  if (candidate$Scale == "Log") {
+    answer <- data.frame(Mean = exp(mu + v/2),
+                         Lower = exp(lower), Upper = exp(upper))
+  } else {
+    answer <- data.frame(Mean = mu, Lower = lower, Upper = upper)
+  }
+  answer$mu <- mu
+  answer$variance <- v
+  stopifnot(all(is.finite(as.matrix(answer))))
+  answer
+}
+
+score_predictions <- function(y, p) {
+  interval_score <- (p$Upper-p$Lower) +
+    40*pmax(p$Lower-y, 0) + 40*pmax(y-p$Upper, 0)
+  data.frame(RMSE = sqrt(mean((p$Mean-y)^2)),
+    IS95 = mean(interval_score),
+    Coverage = 100*mean(y >= p$Lower & y <= p$Upper),
+    Width = mean(p$Upper-p$Lower), Bias = mean(p$Mean-y))
+}
+```
+
+The `OK` option in `geoR` estimates the trend coefficients. With the
+external elevation and coordinate design matrices above, the prediction is
+**universal kriging**, despite that option name. I explicitly use
+`signal = FALSE` to predict an annual observation, including the nugget.
+
+## Pointwise intervals and the log scale
+
+For a raw Gaussian model, the predictive mean is $m$ and the interval is
+$m\pm1.96\sqrt{v}$. For a log model, $m$ and $v$ refer to log rainfall.
+On the original scale I use
+
+\[
+\widehat{E(Y\mid\text{data})}=\exp(m+v/2),\qquad
+[l,u]=[\exp(m-1.96\sqrt v),\ \exp(m+1.96\sqrt v)].
+\]
+
+Simply using $\exp(m)$ would give the predictive median, not the mean
+needed for squared-error comparison. I apply the same formulas in
+cross-validation and on the grid. I log the data explicitly and keep
+`lambda = 1` in `geoR` to avoid applying the transformation twice.
+
+For the homework's pointwise confidence intervals, I report **approximate
+95% prediction intervals for unknown annual rainfall at each location**.
+They include spatial uncertainty, the nugget and the universal-kriging
+correction for estimating the mean coefficients. They treat the fitted
+covariance parameters and selected model as fixed, so they do not include
+their uncertainty. They are not confidence intervals for a regression
+coefficient, Bayesian credible intervals, or a simultaneous 95% band for
+all grid points. Intervals for only the smooth latent signal would be
+narrower because they would exclude the new observation's nugget.
+
+```{r yearly-function}
+analyse_year <- function(d, grid) {
+  set.seed(2026 + d$anno[1])
+  fold <- sample(rep(1:5, length.out = nrow(d)))
+  predictions <- vector("list", nrow(candidates))
+  scores <- vector("list", nrow(candidates))
+  rejected <- integer(nrow(candidates))
+  for (j in seq_len(nrow(candidates))) {
+    p <- data.frame(Mean = rep(NA_real_, nrow(d)), Lower = NA_real_,
+                    Upper = NA_real_, mu = NA_real_, variance = NA_real_)
+    for (k in 1:5) {
+      test <- fold == k
+      f <- fit_one(d[!test, ], candidates[j, ])
+      p[test, ] <- predict_one(f, d[test, ], candidates[j, ])
+      rejected[j] <- rejected[j] + f$rejected
+    }
+    predictions[[j]] <- p
+    scores[[j]] <- score_predictions(d$rain, p)
+  }
+  scores <- cbind(candidates, do.call(rbind, scores))
+  ranking <- order(scores$IS95, scores$RMSE)
+  best <- ranking[1]
+  fitted <- fit_one(d, candidates[best, ])
+  mapped <- predict_one(fitted, grid, candidates[best, ])
+  hull <- chull(d$x, d$y)
+  mapped$Outside_hull <- sp::point.in.polygon(
+    grid$x, grid$y, d$x[hull], d$y[hull]) == 0
+  mapped$Outside_elevation <- grid$Quota < min(d$Quota) |
+                              grid$Quota > max(d$Quota)
+  list(year = d$anno[1], fold = fold, scores = scores,
+    predictions = predictions, best = best, runner_up = ranking[2],
+    fitted = fitted, mapped = mapped,
+    rejected = sum(rejected) + fitted$rejected)
+}
+```
+
+```{r fit-all-years, cache=TRUE, cache.vars="results", cache.extra=list(tools::md5sum("data/RainData.RData"), candidates, lapply(trends, deparse), lapply(list(add_coordinates, design, fit_one, predict_one, score_predictions, analyse_year), deparse), as.character(packageVersion("geoR")))}
+# I repeat the same independent yearly analysis; seeds are set inside it.
+if (.Platform$OS.type == "unix") {
+  results <- parallel::mclapply(annual, analyse_year, grid = grid,
+    mc.cores = 4, mc.set.seed = FALSE)
+} else {
+  results <- lapply(annual, analyse_year, grid = grid)
+}
+stopifnot(!any(vapply(results, inherits, logical(1), "try-error")))
+```
+
+# Results and model choices
+
+```{r selection-summary}
+selected <- do.call(rbind, lapply(results, function(r) {
+  a <- r$scores[r$best, ]
+  data.frame(Year = r$year, Model = a$Model, Scale = a$Scale,
+    Trend = a$Trend, Covariance = a$Covariance, IS95_mm = a$IS95,
+    RMSE_mm = a$RMSE)
+}))
+knitr::kable(selected, digits = 2, row.names = FALSE)
+```
+
+The selected model has the smallest mean interval score **among these
+candidates on this split**. It is not a uniquely established model. The
+complete candidate scores are in the appendix, so the choice can be checked
+rather than taken on trust. Small differences between candidates should
+not receive a strong scientific interpretation.
+
+I select log models in **`r sum(selected$Scale == "Log")` of
+`r length(years)` years**, and the elevation-plus-coordinate trend in
+**`r sum(selected$Trend == "Elevation_xy")` years**. The choices can
+change with the validation split or the candidate list. The winning
+interval-score models use the log scale in every year; this is a result
+of the comparison, not a requirement imposed on the candidates.
+
+```{r uncertainty-scores}
+interval_results <- do.call(rbind, lapply(results, function(r) {
+  a <- r$scores[r$best, ]
+  data.frame(Year = r$year, IS95_mm = a$IS95,
+    Coverage_percent = a$Coverage, Width_mm = a$Width, Bias_mm = a$Bias,
+    RMSE_cost_mm = a$RMSE - min(r$scores$RMSE))
+}))
+knitr::kable(interval_results, digits = 2, row.names = FALSE)
+```
+
+The selected models have coverage between
+**`r fmt(min(interval_results$Coverage_percent))`%** and
+**`r fmt(max(interval_results$Coverage_percent))`%**, compared with the
+nominal 95%. The weakest coverage is in
+**`r interval_results$Year[which.min(interval_results$Coverage_percent)]`**,
+so choosing by interval score does not make the intervals perfectly
+calibrated. Positive bias means overprediction. `RMSE_cost_mm` is the
+extra RMSE compared with the best mean-prediction candidate. Its maximum
+is **`r fmt(max(interval_results$RMSE_cost_mm), 2)` mm**. This makes the
+trade-off visible instead of claiming one model is best for every purpose.
+These diagnostics also use the selection folds, so I do not describe them
+as independent guarantees of coverage.
+
+```{r score-tradeoff-example}
+example <- results[["1981"]]
+point_best <- which.min(example$scores$RMSE)
+point_score <- example$scores[point_best, ]
+interval_score <- example$scores[example$best, ]
+negative_limits <- sum(example$predictions[[point_best]]$Lower < 0)
+```
+
+For example, in 1981 the raw model's RMSE is
+**`r fmt(point_score$RMSE, 2)` mm**, compared with
+**`r fmt(interval_score$RMSE, 2)` mm** for the selected log model.
+However, its interval score is **`r fmt(point_score$IS95, 2)` mm**, compared
+with **`r fmt(interval_score$IS95, 2)` mm** for the log model. The raw model
+also gives negative lower limits at **`r negative_limits` held-out stations**.
+Here I accept a small increase in RMSE for better interval predictions and
+a distribution that respects the positive rainfall scale.
+
+## Fitted covariance parameters
+
+```{r parameter-summary}
+parameters <- do.call(rbind, lapply(results, function(r) {
+  m <- r$fitted$fit
+  data.frame(Year = r$year, Partial_sill = m$cov.pars[1],
+    Nugget = m$nugget, Nugget_share = m$nugget/sum(m$cov.pars[1], m$nugget),
+    Phi_km = m$cov.pars[2],
+    Range_bound = m$cov.pars[2] < 0.51 | m$cov.pars[2] > 1499,
+    Rejected_starts = r$rejected)
+}))
+knitr::kable(parameters, digits = 3, row.names = FALSE)
+```
+
+All selected models use log rainfall, so the variance parameters in this
+table are in **squared log units**. The distance units are unchanged.
+`Phi_km` is the software's range parameter: it is the exact
+range for the spherical model, while an exponential correlation falls to
+about 0.05 at $3\phi$. For Matérn 1.5, that distance is about
+$4.74\phi$. I therefore interpret the range using the selected family.
+
+I balance trend fit with residual structure. A smaller nugget is not a
+selection rule by itself, and a larger nugget does not automatically mean
+bad measurements. Boundary estimates and noisy diagnostic curves make
+precise parameter interpretations less reliable. There are
+**`r sum(parameters$Range_bound)` selected fits at a range bound** and
+**`r sum(parameters$Rejected_starts)` rejected starts** across the fitting
+and validation runs. Every candidate still has a converged fit in every fold.
+
+# Diagnostics for the selected models
+
+I examine the raw and detrended semivariograms on the **selected response
+scale**. A rising raw curve can reflect a changing mean, not only residual
+dependence. The fitted curve comes from maximum likelihood; it is not a
+least-squares fit to the plotted variogram points. I use 12 bins up to half
+the maximum station separation. The pair counts are retained with the
+diagnostics because sparse bins are less stable.
+
+```{r diagnostic-functions}
+diagnostics <- lapply(results, function(r) {
+  f <- r$fitted
+  cnd <- candidates[r$best, ]
+  cutoff <- max(dist(f$g$coords))/2
+  breaks <- seq(0, cutoff, length.out = 13)
+  raw <- geoR::variog(f$g, breaks = breaks, trend = "cte",
+                      messages = FALSE)
+  adjusted <- geoR::variog(f$g, breaks = breaks,
+    trend = trends[[cnd$Trend]], messages = FALSE)
+  dirs <- lapply(c(0, 45, 90, 135), function(a) {
+    geoR::variog(f$g, breaks = breaks, trend = trends[[cnd$Trend]],
+      direction = a*pi/180, tolerance = pi/8, messages = FALSE)
+  })
+  list(raw = raw, adjusted = adjusted, directions = dirs)
+})
+```
+
+```{r yearly-diagnostics, fig.width=10, fig.height=7.5, results='asis'}
+groups <- split(seq_along(results),
+                cut(seq_along(results), breaks = 4, labels = FALSE))
+for (indices in groups) {
+  par(mfrow = c(length(indices), 3), mar = c(3, 3, 2, 0.5),
+      mgp = c(1.7, 0.5, 0))
+  for (i in indices) {
+    r <- results[[i]]
+    dg <- diagnostics[[i]]
+    m <- r$fitted$fit
+    cnd <- candidates[r$best, ]
+    d <- annual[[i]]
+    p <- r$predictions[[r$best]]
+    z <- if (cnd$Scale == "Log") log(d$rain) else d$rain
+    qqnorm((z-p$mu)/sqrt(p$variance), pch = 19, cex = 0.35,
+      main = paste(r$year, "held-out Q-Q"), xlab = "Normal quantile",
+      ylab = "Standardised error")
+    abline(0, 1, col = "#C45A33")
+    h <- seq(0, max(dg$raw$u), length.out = 100)
+    curve <- m$nugget + m$cov.pars[1] -
+      geoR::cov.spatial(h, cov.model = m$cov.model,
+                        cov.pars = m$cov.pars, kappa = m$kappa)
+    plot(dg$raw$u, dg$raw$v, type = "b", pch = 1, cex = 0.45,
+      ylim = range(c(dg$raw$v, dg$adjusted$v, curve)),
+      main = paste(r$year, "variograms"), xlab = "Distance (km)",
+      ylab = "Semivariance")
+    lines(dg$adjusted$u, dg$adjusted$v, type = "b", pch = 19,
+          cex = 0.45, col = "#267A8A")
+    lines(h, curve, col = "#C45A33", lwd = 1.5)
+    if (i == indices[1]) legend("topleft", c("Raw", "Detrended", "ML"),
+      col = c("black", "#267A8A", "#C45A33"), lty = 1,
+      cex = 0.75, bty = "n")
+    plot(dg$adjusted$u, dg$adjusted$v, type = "n",
+      ylim = range(unlist(lapply(dg$directions, function(v) v$v))),
+      main = paste(r$year, "directions"), xlab = "Distance (km)",
+      ylab = "Residual semivariance")
+    for (k in 1:4) lines(dg$directions[[k]]$u, dg$directions[[k]]$v,
+                        col = k, lty = k)
+    if (i == indices[1]) legend("topleft", c("0", "45", "90", "135"),
+                          col = 1:4, lty = 1:4, cex = 0.75, bty = "n")
+  }
+  cat("\n\n")
+}
+```
+
+The Q–Q plots assess held-out errors on the model scale, including their
+predicted standard deviations. Tail departures warn me that Gaussian
+intervals may be imperfect. These errors share training observations, so
+they are not independent observations for a formal normality test.
+The directional variograms (angles in degrees) help check the isotropy
+assumption. Differences
+can also arise from unequal pair counts, the elongated sampling region,
+or a trend that is too simple. The plots do not prove stationarity or
+isotropy. In particular, the lower tails in 1980 and 1982 depart from
+the normal line. I keep those observations, but unusual dry locations may
+be harder to predict than the Gaussian approximation suggests. The
+directional curves also differ at longer distances, so isotropy remains
+a working approximation. I keep these limits explicit when interpreting
+the maps.
+
+```{r pair-counts}
+pair_check <- do.call(rbind, lapply(seq_along(results), function(i) {
+  dg <- diagnostics[[i]]
+  data.frame(Year = results[[i]]$year,
+    Min_pairs = min(dg$adjusted$n), Max_pairs = max(dg$adjusted$n),
+    Min_directional_pairs = min(unlist(lapply(dg$directions,
+                                             function(v) v$n))))
+}))
+knitr::kable(pair_check, row.names = FALSE)
+```
+
+# Rainfall maps and pointwise intervals
+
+Each yearly page shows the predicted **mean annual observation**, the
+lower and upper 95% limits, and the interval width. The first three maps
+share a colour scale within that year, so their colours are directly
+comparable. The width map has its own scale. Scales are printed on every
+page and may change between years. I keep the supplied 1,005 grid points;
+I do not fill in a different regular grid.
+
+Small black dots are that year's observed stations. A cross marks a grid
+point outside the station convex hull, and an open triangle marks an
+elevation outside the range observed that year. I keep these points, but
+their predictions depend more strongly on model extrapolation. Neither
+flag captures every possible form of extrapolation.
+
+```{r grid-summary}
+map_summary <- do.call(rbind, lapply(results, function(r) {
+  p <- r$mapped
+  data.frame(Year = r$year, Min_mean = min(p$Mean), Max_mean = max(p$Mean),
+    Median_width = median(p$Upper-p$Lower),
+    Outside_hull = sum(p$Outside_hull),
+    Outside_elevation = sum(p$Outside_elevation),
+    Negative_lower = sum(p$Lower < 0))
+}))
+knitr::kable(map_summary, digits = 1, row.names = FALSE)
+```
+
+The grid elevations range from **`r min(grid$Quota)` to
+`r max(grid$Quota)` m**, while station elevations across all years range
+from **`r min(rain$Quota)` to `r max(rain$Quota)` m**. Predictions high in
+the mountains therefore extend beyond the elevation information in the
+data. A wide interval is useful evidence of uncertainty, but it may still
+understate uncertainty from extrapolating an incorrect trend.
+All the selected models use log rainfall, so their lower limits stay
+positive. The raw Gaussian candidates can produce negative lower limits,
+as the 1981 validation example shows. I do not repair such limits by
+silently truncating them, because that would change the stated model.
+
+For a log model, a large interval width in mm can reflect both uncertainty
+on the log scale and a high rainfall level. Even the same log-scale standard
+error gives a wider interval in mm at a wetter location. I therefore do not
+read the width map as a map of station density alone.
+
+```{r map-function}
+draw_values <- function(values, breaks, title, d, p) {
+  colours <- hcl.colors(length(breaks)-1, "YlGnBu", rev = TRUE)
+  map_frame(title)
+  index <- cut(values, breaks, include.lowest = TRUE)
+  points(grid$x, grid$y, pch = 15, cex = 0.55, col = colours[index])
+  draw_outlines()
+  points(d$x, d$y, pch = 20, cex = 0.18)
+  points(grid$x[p$Outside_hull], grid$y[p$Outside_hull],
+         pch = 4, cex = 0.38, col = "grey25")
+  points(grid$x[p$Outside_elevation], grid$y[p$Outside_elevation],
+         pch = 2, cex = 0.48, col = "#B33A26")
+  labels <- paste(head(breaks, -1), tail(breaks, -1), sep = " to ")
+  legend("bottomleft", labels, fill = colours, title = "mm",
+         bty = "n", cex = 0.75)
+}
+```
+
+```{r yearly-maps, results='asis', fig.width=7.5, fig.height=8}
+for (i in seq_along(results)) {
+  r <- results[[i]]
+  p <- r$mapped
+  d <- annual[[i]]
+  a <- r$scores[r$best, ]
+  cat("\n\n\\newpage\n\n## Year ", r$year, "\n\n", sep = "")
+  cat("I use model ", a$Model, ": ", a$Scale, ", ", a$Trend,
+      ", ", a$Covariance, ". Selection interval score is ", fmt(a$IS95),
+      " mm and RMSE is ", fmt(a$RMSE),
+      " mm; held-out coverage is ", fmt(a$Coverage), "%. ",
+      "Predicted means range from ", fmt(min(p$Mean)), " to ",
+      fmt(max(p$Mean)), " mm. The median interval width is ",
+      fmt(median(p$Upper-p$Lower)), " mm.\n\n", sep = "")
+  breaks <- pretty(range(p[c("Mean", "Lower", "Upper")]), n = 6)
+  width_breaks <- pretty(range(p$Upper-p$Lower), n = 6)
+  par(mfrow = c(2, 2), mar = c(3.5, 3.5, 2.3, 0.5),
+      mgp = c(2, 0.6, 0))
+  draw_values(p$Mean, breaks, "Predicted mean", d, p)
+  draw_values(p$Lower, breaks, "Lower 95% limit", d, p)
+  draw_values(p$Upper, breaks, "Upper 95% limit", d, p)
+  draw_values(p$Upper-p$Lower, width_breaks, "95% interval width", d, p)
+  cat("\n\nCrosses: outside station hull. Red triangles: elevation ",
+      "outside the observed range. ", sum(p$Outside_hull),
+      " grid points are outside the hull and ", sum(p$Outside_elevation),
+      " have an extrapolated elevation. These groups may overlap.\n\n",
+      sep = "")
+}
+```
+
+\newpage
+
+# What I take from the results
+
+Across the maps, higher predicted rainfall often follows the higher
+elevations, with local variation added by the spatial residual correction.
+This is consistent with the positive rainfall–elevation association seen
+in the observations. It does not mean elevation explains every wet or dry
+location.
+
+The maps separate the estimated rainfall pattern from its uncertainty.
+I should read the predicted mean together with the lower and upper limits,
+especially near the boundary and at elevations beyond the station range.
+A detailed-looking map is not evidence that every local feature is well known.
+
+The best-scoring model is allowed to change by year. This does not mean
+that the physical process suddenly changes covariance family each year:
+finite samples, changing stations and small score differences can also
+change the ranking. I use one common set of candidate models and one common
+selection rule to make the yearly analysis consistent.
+
+The important limits are the assumed trend and residual stationarity,
+isotropy, Gaussian approximation on the selected scale, and treating the
+estimated covariance parameters as known. The validation split also matters.
+Repeating the splits or using spatially separated validation would help
+assess stability, while a bootstrap or a Bayesian analysis could address
+more parameter uncertainty. Those are extensions, not analyses performed here.
+
+# Appendix: all candidate scores
+
+The tables below make the selection rule checkable. `IS95` and `Width` are
+in mm, `Coverage` is a percentage, and the Matérn model always has
+$\kappa=1.5$. Rows are ordered by interval score. The first row is selected.
+
+```{r full-score-tables, results='asis'}
+for (r in results) {
+  cat("\n\n### ", r$year, "\n\n", sep = "")
+  tab <- r$scores[order(r$scores$IS95, r$scores$RMSE),
+                 c("Model", "IS95", "RMSE", "Coverage", "Width")]
+  print(knitr::kable(tab, digits = 2, row.names = FALSE))
+  cat("\n\n")
+}
+```
+
+# Sources and reproducibility
+
+I used the supplied course notes by Giovanna Jona Lasinio,
+*Chapter1-2* (exploration, trend and variograms), *Chapter3-5* (Gaussian
+spatial models, maximum likelihood and kriging uncertainty), and
+*Chapter6-11*, Section 10.3 (predictive validation and interval score).
+The last score applies to central prediction intervals here; I am not
+using Bayesian estimation. I also checked the `geoR` definitions of
+`likfit`, `trend.spatial`, `krige.control` and `krige.conv`, especially
+external covariates, Matérn smoothness and the observation prediction target.
+
+```{r package-versions}
+packages <- c("geoR", "sp", "knitr", "rmarkdown")
+knitr::kable(data.frame(Component = c("R", packages),
+  Version = c(as.character(getRversion()),
+    vapply(packages, function(p) as.character(packageVersion(p)),
+           character(1)))), row.names = FALSE)
+```
+
+# Use of AI
+
+I used ChatGPT/Codex to help develop the analysis plan, write and run the
+R code, check the prediction and interval calculations, and draft the
+comments in this report. AI assistance covered the data checks, yearly
+model comparisons, likelihood fits, validation, maps and compilation.
+I asked for simple code and explanations that I could follow and discuss
+in class. The main request was to analyse every rainfall year using the
+matching grid, choose trend and covariance models by predictive scores,
+and report pointwise intervals with their assumptions. The computations
+were run in the AI-assisted R environment. This report does not claim an
+independent manual replication by me; I remain responsible for reviewing
+the results and understanding the choices before presenting them.
