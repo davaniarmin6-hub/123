@@ -11,7 +11,7 @@ r_series <- paste(R.version$major,
 user_library <- file.path(tools::R_user_dir("Homework4", "data"), r_series)
 dir.create(user_library, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(user_library, .libPaths()))
-needed <- c("geoR", "sp", "knitr", "rmarkdown", "tinytex", "codetools")
+needed <- c("geoR", "sp", "knitr", "rmarkdown", "tinytex")
 missing <- needed[!vapply(needed, requireNamespace, logical(1),
                           quietly = TRUE)]
 if (length(missing) > 0) install.packages(missing, lib = user_library)

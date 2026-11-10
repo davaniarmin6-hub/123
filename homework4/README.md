@@ -1,23 +1,23 @@
-# Homework 4 — Annual rainfall, maximum-likelihood kriging
+# Homework 4 — Rainfall in 1970, maximum-likelihood kriging
 
-The report analyses **all 13 years (1970–1982)** separately. It contains the R code, model choices, cross-validation scores, pointwise 95% prediction intervals, yearly maps, and an AI-assistance paragraph.
+This revision follows the professor's feedback and analyses **1970 only**, the year used in Homework 2. The full analysis is rerun from the original data: exploration of trend and Gaussianity, 12 candidate models, five-fold cross-validation, variogram and residual diagnostics, grid predictions, and approximate pointwise 95% prediction intervals. No previous analysis cache is read.
 
 Files:
 
-- `Homework_4_Rainfall.Rmd`: editable report and complete analysis code.
-- `Homework_4_Rainfall.pdf`: compiled report, including code and plots.
-- `Build_Homework_4.R`: starter for installing missing R packages and compiling the PDF.
-- `data/RainData.RData`: the supplied rainfall observations, matching land grid, and outlines.
-- `Homework_4_Rainfall_bundle.zip`: the report, PDF, starter, this README, and data together.
+- `Homework_4_Rainfall.Rmd`: complete code and focused student-style report.
+- `Homework_4_Rainfall.pdf`: compiled report with code, results and plots.
+- `Build_Homework_4.R`: installs missing R packages and compiles the PDF.
+- `data/RainData.RData`: unchanged supplied data, matching land grid and outlines; the Rmd immediately selects 1970 for analysis.
+- `Homework_4_Rainfall_bundle.zip`: all five files together.
 
-Download and extract the ZIP, keeping its folder structure. With R and RStudio installed, open `Build_Homework_4.R` and click **Source**, or knit the Rmd directly if `rmarkdown` and `knitr` are already available. If the starter asks you to select a file, choose `Homework_4_Rainfall.Rmd`. Packages are installed in a user library. TinyTeX is installed if a LaTeX engine is missing. Internet access is required for installation. On Linux, some packages may also require system build dependencies. This has not been tested on a separate empty PC.
+Download and extract the ZIP, keeping the folder structure. With R and RStudio installed, open `Build_Homework_4.R` and click **Source**, or knit the Rmd if `knitr` and `rmarkdown` are already installed. If the starter opens a file-selection window, choose `Homework_4_Rainfall.Rmd`. Missing packages are installed into a user library; TinyTeX is installed if the required LaTeX engine is missing. Internet access is needed for installation. Linux can require additional system build tools. Installation on a separate empty computer has not been tested.
 
-The first run fits many spatial models and can take around 15–25 minutes or longer, depending on the computer. On Unix-like systems the yearly loop uses four worker processes; on Windows it uses a sequential loop. Each year has its own fixed seed, so this does not change the statistical procedure. The expensive annual analysis is cached by knitr; the cache key includes the input data checksum, candidates, modelling functions, and geoR version. Delete `Homework_4_cache` to force recomputation. The submitted PDF was compiled from an actual run. No separate plot-image or CSV exports are required by the analysis.
+Every knit recomputes the 1970 analysis, including all cross-validation fits. There is no parallel or multi-year loop and caching is disabled. The run takes a few minutes depending on the computer. Plots are embedded in the report; the analysis does not export separate plot or CSV files.
 
-The matching prediction grid is `grid` inside `RainData.RData`. The previously supplied `AllGrids.RData` contains unrelated marine data and is not included. The original data file is unchanged: the report corrects station 4367 to Calabria and stations 4085 and 4086 to Basilicata in memory, keeping all observations.
+All 189 stations remain in the analysis. Station 4367 is assigned to Calabria; stations 4085 and 4086 are assigned to Basilicata. The prediction grid contains 1,005 points and is the `grid` object inside `RainData.RData`. The unrelated marine `AllGrids.RData` file is not needed.
 
-There are 12 candidates for each year: raw/log response, elevation/elevation plus coordinates, and exponential/spherical/Matérn 1.5 covariance. Gaussian maximum likelihood estimates parameters. Lowest mean five-fold central 95% interval score selects the candidate, with RMSE breaking exact ties. RMSE, coverage, width, and bias describe the trade-off between mean prediction and interval quality. The model-selection scores are not presented as independent nested-validation estimates. All scores and maps are on the original rainfall scale.
+The mean 95% Interval Score is the primary predictive selection criterion, with RMSE breaking exact ties. The report also gives RMSE, interval coverage, mean width and bias, and explains the limits of using selection folds for assessment. All scores and mapped results are on the original rainfall scale.
 
-The intervals target annual rainfall at an unobserved station-like location, including the nugget. They are approximate pointwise prediction intervals, with fitted covariance parameters treated as fixed. Grid points outside the station hull or observed elevation range are marked. The report distinguishes this from a smooth latent-surface interval and from a simultaneous or Bayesian interval.
+This is a maximum-likelihood analysis. Its intervals are approximate prediction intervals with covariance parameters treated as fixed. A short clarification distinguishes these from Bayesian credible intervals for parameters and posterior predictive intervals for unobserved values. No Bayesian posterior is fitted.
 
-The GitHub location is the repository's **work** branch, folder **homework4**.
+GitHub location: **work** branch, **homework4** folder.
