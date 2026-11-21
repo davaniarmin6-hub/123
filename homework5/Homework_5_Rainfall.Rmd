@@ -1,0 +1,659 @@
+---
+title: "Homework 5: Bayesian rainfall prediction in 1970"
+author: "Mojtaba Alinejad"
+subtitle: "Spatial statistics 2026–2027 · Professor: Dr. Lasinio"
+date: "21 November 2026"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+  html_document:
+    self_contained: true
+    toc: true
+    number_sections: true
+fontsize: 10pt
+geometry: margin=0.8in
+---
+
+```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+r_series <- paste(R.version$major,
+  strsplit(R.version$minor, ".", fixed = TRUE)[[1]][1], sep = ".")
+user_library <- file.path(tools::R_user_dir("Homework5", "data"), r_series)
+dir.create(user_library, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(user_library, .libPaths()))
+needed <- c("geoR", "sp", "knitr", "rmarkdown", "tinytex", "codetools")
+missing <- needed[!vapply(needed, requireNamespace, logical(1),
+                        quietly = TRUE)]
+if (length(missing)) install.packages(missing, lib = user_library)
+stopifnot(all(vapply(needed, requireNamespace, logical(1), quietly = TRUE)))
+if (knitr::is_latex_output() && !nzchar(Sys.which("xelatex"))) {
+  tinytex::install_tinytex()
+}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE,
+  fig.align = "center", fig.width = 8, fig.height = 4.5,
+  out.width = "100%", cache.path = "Homework_5_cache/")
+options(width = 76)
+fmt <- function(x, digits = 2) formatC(x, digits = digits, format = "f")
+```
+
+# What I compare with Homework 4
+
+I use **1970 only**, the same year as the revised Homework 4. I keep its
+log-rainfall model, elevation trend and spherical residual covariance.
+The new question is how the estimates and prediction intervals change
+when I account for parameter uncertainty with Bayesian kriging.
+
+The distinction is that maximum likelihood uses estimated covariance
+parameters in the prediction formula. Bayesian prediction averages over
+their posterior distribution. It still depends on the chosen trend,
+covariance family and priors; it does not remove those assumptions.
+
+For a fair comparison I use the same observations, grid, five validation
+folds and prediction target. I refit the likelihood model and the Bayesian
+model within each training set. The structure selected in Homework 4 is
+held fixed for both. This is a comparison **conditional on that structure**,
+not an independent nested assessment of the earlier model-selection process.
+
+## Data and the prediction target
+
+```{r data}
+data_env <- new.env()
+invisible(load("data/RainData.RData", envir = data_env))
+dat <- subset(data_env$dati, anno == 1970)
+grid <- data_env$grid
+region_fix <- c("4085" = "Basilicata", "4086" = "Basilicata",
+                "4367" = "Calabria")
+dat$Nome_Regione <- as.character(dat$Nome_Regione)
+i <- dat$ID %in% as.numeric(names(region_fix))
+dat$Nome_Regione[i] <- unname(region_fix[as.character(dat$ID[i])])
+stopifnot(nrow(dat) == 189, all(dat$anno == 1970), !anyNA(dat),
+  !anyNA(grid), all(dat$totanno > 0), !anyDuplicated(dat$ID),
+  !anyDuplicated(dat[c("XUTM", "YUTM")]),
+  !anyDuplicated(grid[c("XUTM", "YUTM")]))
+prepare <- function(d) {
+  d$x <- d$XUTM/1000
+  d$y <- d$YUTM/1000
+  d$elev <- d$Quota/1000
+  d
+}
+dat <- prepare(dat)
+grid <- prepare(grid)
+dat$rain <- dat$totanno
+stopifnot(qr(model.matrix(~elev, dat))$rank == 2)
+knitr::kable(data.frame(Year = 1970, Stations = nrow(dat),
+  Grid_points = nrow(grid), Mean_rainfall = mean(dat$rain),
+  Cor_rain_elevation = cor(dat$rain, dat$Quota)), digits = 2)
+```
+
+All 189 stations remain in the analysis, including the three corrected
+regional labels. The matching land grid is inside `RainData.RData`.
+As in Homework 4, I interpret rainfall as mm, elevation as m, and the
+supplied projected coordinates as m before converting distances to km.
+Those units are assumptions based on the supplied names and values;
+the file does not provide full coordinate-system metadata.
+
+The target is **annual rainfall at an unobserved station-like location**.
+It includes the nugget variation. I explicitly set `signal = FALSE` for
+both prediction methods, because their default settings differ in `geoR`.
+
+# The Bayesian model and priors
+
+I use the same observation model as Homework 4:
+\[
+\log Y(s)=\beta_0+\beta_1\,\mathrm{elevation}(s)/1000+w(s)+\epsilon(s).
+\]
+The spatial residual $w(s)$ has partial sill $\sigma^2$ and spherical
+range $\phi$. The independent nugget has variance $\tau^2$.
+The spherical correlation reaches zero at distance $\phi$. Stationarity
+and isotropy refer to the residual process after accounting for elevation.
+The Gaussian approximation is on the log scale, not the rainfall scale.
+
+I use `geoR::krige.bayes`. It considers a grid of range and relative-nugget
+values and uses conjugate calculations for the remaining parameters.
+It can draw directly from this posterior approximation. This is not an
+MCMC analysis, so burn-in, trace plots and R-hat are not the relevant checks.
+I instead check simulation stability, parameter-grid resolution and prior
+sensitivity.
+
+## My prior choices
+
+I define $\eta=\tau^2/\sigma^2$. This is a ratio to the **partial sill**,
+not the nugget fraction of total variance; that fraction is $\eta/(1+\eta)$.
+
+| Quantity | Prior used |
+|:--|:--|
+| Trend coefficients | Flat prior: $p(\beta_0,\beta_1)\propto 1$ |
+| Partial sill | $\sigma^2=4(0.1)/U$, with $U\sim\chi^2_4$ |
+| Range $\phi$ | Values 10, 30, ..., 610 km, with weights proportional to $\exp(-\phi/150)$ |
+| Relative nugget $\eta$ | Equal probabilities on 0, 0.05, ..., 1.50 |
+
+The flat trend prior does not favour a particular intercept or elevation
+effect. It is an improper prior, but gives a proper posterior here because
+the trend matrix has full rank and the remaining priors are proper.
+The partial-sill prior is a scaled inverse-chi-squared prior.
+The range prior gives more weight to shorter ranges but allows dependence
+over much of the study area. These are modelling choices, not uniquely
+correct or completely non-informative priors. The values are fixed across
+validation folds; I do not estimate them from held-out rainfall or choose
+them by the best validation score.
+
+```{r bayesian-functions}
+make_g <- function(d) {
+  geoR::as.geodata(data.frame(x = d$x, y = d$y,
+    z = log(d$rain), elev = d$elev), covar.col = 4)
+}
+
+make_prior <- function(step = 20, range_scale = 150) {
+  geoR::prior.control(beta.prior = "flat",
+    sigmasq.prior = "sc.inv.chisq",
+    sigmasq = 0.1, df.sigmasq = 4,
+    phi.prior = "exponential", phi = range_scale,
+    phi.discrete = seq(10, 610, by = step),
+    tausq.rel.prior = "uniform",
+    tausq.rel.discrete = seq(0, 1.5, by = step/400))
+}
+
+bayes_fit <- function(d, locations = NULL, seed = 5001,
+                      prior = make_prior(), draws = 20000) {
+  set.seed(seed)
+  X <- geoR::trend.spatial(~elev, d)
+  if (is.null(locations)) {
+    b <- geoR::krige.bayes(make_g(d),
+      model = geoR::model.control(trend.d = X,
+        cov.model = "spherical", lambda = 1), prior = prior,
+      output = geoR::output.control(n.posterior = draws, messages = FALSE))
+  } else {
+    b <- geoR::krige.bayes(make_g(d),
+      locations = as.matrix(locations[c("x", "y")]),
+      model = geoR::model.control(trend.d = X,
+        trend.l = geoR::trend.spatial(~elev, locations),
+        cov.model = "spherical", lambda = 1), prior = prior,
+      output = geoR::output.control(n.posterior = draws,
+        n.predictive = draws, simulations.predictive = TRUE,
+        quantile = c(0.025, 0.5, 0.975), mean.var = FALSE,
+        moments = FALSE, signal = FALSE, messages = FALSE))
+  }
+  list(posterior = b$posterior, predictive = b$predictive)
+}
+
+bayes_summary <- function(b, columns = NULL) {
+  sim <- b$predictive$simulations
+  if (!is.null(columns)) sim <- sim[, columns, drop = FALSE]
+  q <- exp(t(apply(sim, 1, quantile,
+                  probs = c(0.025, 0.5, 0.975), names = FALSE)))
+  data.frame(Lower = q[, 1], Median = q[, 2], Upper = q[, 3])
+}
+
+boundary <- function(b) {
+  p <- b$posterior
+  c(phi_low = unname(head(p$phi$distribution, 1)),
+    phi_high = unname(tail(p$phi$distribution, 1)),
+    eta_low = unname(head(p$tausq.rel$distribution, 1)),
+    eta_high = unname(tail(p$tausq.rel$distribution, 1)))
+}
+```
+
+I log rainfall explicitly and use `lambda = 1` inside `geoR`, so it is not
+transformed twice. Exponentiating the log-scale predictive quantiles gives
+the corresponding rainfall-scale quantiles.
+
+## Credible intervals and posterior predictive intervals
+
+A **95% credible interval for a parameter** describes posterior uncertainty
+about that parameter, conditional on the data and model. For example, it
+can describe the unknown elevation coefficient, partial sill or range.
+
+A **95% posterior predictive interval** describes an unobserved rainfall
+value at a new location. It includes parameter uncertainty and remaining
+spatial variation, plus the nugget for the observation target used here.
+These are the intervals shown on the Bayesian maps. The Homework 4
+intervals remain approximate likelihood-based prediction intervals.
+
+I use central equal-tailed intervals, with 2.5% in each tail. They are not
+HPD intervals. The predictive intervals are pointwise; they do not provide
+simultaneous 95% coverage for the entire map.
+
+## Why I compare predictive medians
+
+I use the **predictive median** as the point prediction for both methods.
+It is the value with half the predictive probability below it and half
+above it. I assess it with MAE, which is appropriate for a median forecast.
+
+There is a mathematical reason for this choice. The conjugate variance
+prior gives a mixture of Student-t predictive distributions on the log
+scale. After exponentiation, this model has no finite arithmetic rainfall
+mean, even though its central quantiles are well defined. I therefore do
+not average simulated rainfall values or report a Bayesian rainfall mean.
+This is a limitation of the model's extreme tails, and a reason to focus
+on quantiles. The Interval Score below evaluates those interval endpoints
+against the observed held-out rainfall.
+
+Homework 4 mapped likelihood predictive **means**. For the side-by-side
+maps here, I also calculate likelihood **medians**. Its interval formula
+and its original mean-based RMSE are retained for reference. This keeps
+the two point maps comparable and makes the change of summary explicit.
+
+# A fair predictive comparison
+
+## Refit the Homework 4 model
+
+```{r likelihood-functions}
+fit_ml <- function(d) {
+  g <- make_g(d)
+  s2 <- mean(resid(lm(log(rain) ~ elev, data = d))^2)
+  fits <- lapply(c(20, 80), function(start) {
+    tryCatch(geoR::likfit(g, trend = ~elev, cov.model = "spherical",
+      ini.cov.pars = c(0.8*s2, start), nugget = 0.2*s2,
+      fix.nugget = FALSE, lambda = 1, fix.lambda = TRUE,
+      lik.method = "ML", limits = geoR::pars.limits(phi = c(0.5, 1500)),
+      messages = FALSE, control = list(maxit = 2000)),
+      error = function(e) NULL)
+  })
+  ok <- vapply(fits, function(f) {
+    !is.null(f) && is.finite(f$loglik) &&
+      f$info.minimisation.function$convergence == 0
+  }, logical(1))
+  if (!any(ok)) stop("No converged maximum-likelihood fit.")
+  fits <- fits[ok]
+  fits[[which.max(vapply(fits, function(f) f$loglik, numeric(1)))]]
+}
+
+predict_ml <- function(d, locations, fit) {
+  p <- geoR::krige.conv(make_g(d),
+    locations = as.matrix(locations[c("x", "y")]),
+    krige = geoR::krige.control(type.krige = "OK", obj.model = fit,
+      trend.d = geoR::trend.spatial(~elev, d),
+      trend.l = geoR::trend.spatial(~elev, locations), micro.scale = 0),
+    output = geoR::output.control(signal = FALSE, messages = FALSE))
+  data.frame(Lower = exp(p$predict-qnorm(0.975)*sqrt(p$krige.var)),
+    Median = exp(p$predict),
+    Upper = exp(p$predict+qnorm(0.975)*sqrt(p$krige.var)),
+    Mean = exp(p$predict+p$krige.var/2))
+}
+
+scores <- function(y, p) {
+  interval_score <- p$Upper-p$Lower +
+    40*pmax(p$Lower-y, 0) + 40*pmax(y-p$Upper, 0)
+  c(IS95 = mean(interval_score), MAE = mean(abs(p$Median-y)),
+    Coverage = 100*mean(y >= p$Lower & y <= p$Upper),
+    Width = mean(p$Upper-p$Lower))
+}
+```
+
+## Proper scores and validation design
+
+The main comparison uses the **95% Interval Score**:
+\[
+IS_{0.05}(l,u;y)=(u-l)+40(l-y)1(y<l)+40(y-u)1(y>u).
+\]
+It rewards useful narrow intervals and penalises missed observations.
+It is a proper score for central interval forecasts under the usual
+finite-loss conditions: the true 2.5% and 97.5% quantiles minimise its
+expected value. Lower is better. I also report MAE for the median,
+coverage and average interval width. All reported scores are in mm,
+except coverage, which is a percentage.
+
+I use the exact Homework 4 split: five folds and seed `2026 + 1970`.
+Every training fold refits both methods. Bayesian predictions use the
+posterior from that training fold, not the full-data posterior. I use
+20,000 posterior predictive draws per fold and keep the priors fixed.
+
+```{r cache-key, include=FALSE}
+analysis_key <- list(tools::md5sum("data/RainData.RData"),
+  lapply(list(prepare, make_g, make_prior, bayes_fit, bayes_summary,
+              boundary, fit_ml, predict_ml, scores), deparse),
+  as.character(packageVersion("geoR")))
+```
+
+```{r validation, cache=TRUE, cache.vars=c("fold","ml_cv","bayes_cv","cv_half1","cv_half2","boundary_cv"), cache.extra=analysis_key}
+set.seed(2026 + 1970)
+fold <- sample(rep(1:5, length.out = nrow(dat)))
+ml_cv <- data.frame(Lower = rep(NA_real_, nrow(dat)),
+                    Median = NA_real_, Upper = NA_real_, Mean = NA_real_)
+bayes_cv <- cv_half1 <- cv_half2 <- ml_cv[, 1:3]
+boundary_cv <- vector("list", 5)
+for (k in 1:5) {
+  test <- fold == k
+  ml <- fit_ml(dat[!test, ])
+  ml_cv[test, ] <- predict_ml(dat[!test, ], dat[test, ], ml)
+  b <- bayes_fit(dat[!test, ], dat[test, ], seed = 5100+k)
+  bayes_cv[test, ] <- bayes_summary(b)
+  cv_half1[test, ] <- bayes_summary(b, 1:10000)
+  cv_half2[test, ] <- bayes_summary(b, 10001:20000)
+  boundary_cv[[k]] <- boundary(b)
+}
+stopifnot(all(is.finite(as.matrix(ml_cv))),
+          all(is.finite(as.matrix(bayes_cv))))
+```
+
+```{r validation-results}
+comparison <- rbind(Likelihood = scores(dat$rain, ml_cv),
+                    Bayesian = scores(dat$rain, bayes_cv))
+knitr::kable(comparison, digits = 2)
+ml_mean_rmse <- sqrt(mean((ml_cv$Mean-dat$rain)^2))
+improvement <- comparison[1, "IS95"]-comparison[2, "IS95"]
+```
+
+The Bayesian Interval Score is **`r fmt(comparison[2, "IS95"])` mm**, compared
+with **`r fmt(comparison[1, "IS95"])` mm** for likelihood kriging. This is
+a decrease of **`r fmt(improvement)` mm**, or
+**`r fmt(100*improvement/comparison[1, "IS95"])`%**. The result favours the
+Bayesian intervals on this split, but the difference is moderate.
+
+Coverage changes from **`r fmt(comparison[1, "Coverage"])`%** to
+**`r fmt(comparison[2, "Coverage"])`%**; the Bayesian intervals still do not
+reach the nominal 95%. Their average width is
+**`r fmt(comparison[2, "Width"])` mm**, compared with
+**`r fmt(comparison[1, "Width"])` mm** for likelihood intervals.
+The change in coverage corresponds to
+**`r sum(dat$rain >= bayes_cv$Lower & dat$rain <= bayes_cv$Upper)-sum(dat$rain >= ml_cv$Lower & dat$rain <= ml_cv$Upper)`
+additional stations** inside the intervals. This shows why coverage and
+width should be read together with the score.
+Median-prediction MAE differs by only
+**`r fmt(abs(comparison[1, "MAE"]-comparison[2, "MAE"]))` mm**.
+
+As a reproducibility check, the original likelihood **mean** predictions
+give RMSE **`r fmt(ml_mean_rmse)` mm**, matching the revised Homework 4.
+I do not compare that mean-based RMSE directly with a Bayesian median's RMSE.
+
+```{r fold-results}
+fold_results <- do.call(rbind, lapply(1:5, function(k) {
+  i <- fold == k
+  data.frame(Fold = k, Stations = sum(i),
+    IS95_ML = scores(dat$rain[i], ml_cv[i, ])["IS95"],
+    IS95_Bayes = scores(dat$rain[i], bayes_cv[i, ])["IS95"])
+}))
+knitr::kable(fold_results, digits = 2, row.names = FALSE)
+```
+
+The Bayesian Interval Score is lower in
+**`r sum(fold_results$IS95_Bayes < fold_results$IS95_ML)` of the five folds**.
+The improvement is therefore not consistent in every held-out group.
+The folds share training observations, so I do
+not treat these five scores as independent replicates for a significance
+test. Random-fold validation mainly measures interpolation among existing
+stations. It does not establish performance across a large unsampled area.
+
+```{r prediction-check, fig.width=8, fig.height=3.6}
+limits <- range(dat$rain, ml_cv$Median, bayes_cv$Median)
+par(mfrow = c(1, 2), mar = c(4, 4, 2.5, 0.5))
+for (method in c("Likelihood", "Bayesian")) {
+  p <- if (method == "Likelihood") ml_cv else bayes_cv
+  plot(dat$rain, p$Median, xlim = limits, ylim = limits, asp = 1,
+       pch = 19, cex = 0.6, col = "#267A8A", main = method,
+       xlab = "Observed rainfall (mm)", ylab = "Held-out median (mm)")
+  abline(0, 1, col = "#C45A33")
+}
+```
+
+Both methods reproduce the broad pattern and still miss some individual
+stations. Adding parameter uncertainty changes the intervals more clearly
+than it changes the point predictions. It is not evidence that Bayesian
+kriging is always better for rainfall data.
+
+# Parameter precision from credible intervals
+
+```{r full-fits, cache=TRUE, cache.vars=c("full_bayes","full_ml"), cache.extra=analysis_key}
+full_bayes <- bayes_fit(dat, seed = 5200, draws = 50000)
+full_ml <- fit_ml(dat)
+```
+
+```{r credible-intervals}
+post <- full_bayes$posterior$sample
+# I calculate the nugget from each joint posterior draw.
+parameter_draws <- data.frame(
+  Intercept = post$beta0, Elevation = post$beta1,
+  Partial_sill = post$sigmasq,
+  Nugget = post$sigmasq*post$tausq.rel, Range_km = post$phi)
+q <- t(vapply(parameter_draws, quantile, numeric(3),
+              probs = c(0.025, 0.5, 0.975), names = FALSE))
+credible <- data.frame(Parameter = names(parameter_draws),
+  ML = c(full_ml$beta, full_ml$cov.pars[1], full_ml$nugget,
+         full_ml$cov.pars[2]),
+  Median = q[, 2], Lower95 = q[, 1], Upper95 = q[, 3],
+  Width = q[, 3]-q[, 1])
+knitr::kable(credible, digits = 3, row.names = FALSE, booktabs = TRUE,
+  format = if (knitr::is_latex_output()) "latex" else "pipe")
+elevation_change <- quantile(100*(exp(post$beta1/10)-1),
+                            c(0.025, 0.5, 0.975), names = FALSE)
+```
+
+The elevation coefficient has a 95% credible interval above zero. In the
+trend, a 100 m increase in elevation corresponds to a median increase of
+about **`r fmt(elevation_change[2])`%**, with a 95% credible interval of
+**`r fmt(elevation_change[1])`% to `r fmt(elevation_change[3])`%**.
+This is a model-based association, not a causal effect.
+
+The range is less precise: its posterior median is
+**`r fmt(q["Range_km", 2], 0)` km**, with a credible interval from
+**`r fmt(q["Range_km", 1], 0)` to `r fmt(q["Range_km", 3], 0)` km**.
+The likelihood estimate of **`r fmt(full_ml$cov.pars[2], 1)` km** is only
+one point within this uncertainty. A broad range interval means that the
+data do not identify a single correlation distance sharply.
+
+Partial sill and nugget are variances on the **log scale**. Their credible
+interval widths should not be compared numerically with the range width
+in km. Range and partial sill have posterior correlation
+**`r fmt(cor(post$phi, post$sigmasq))`**: different combinations can explain
+similar spatial patterns. The ML column is a point-estimate reference,
+not a likelihood confidence interval. I do not infer that one method is
+more precise merely by comparing an interval with a point.
+
+```{r prior-posterior, fig.width=8, fig.height=3.7}
+phi_values <- as.numeric(names(full_bayes$posterior$phi$distribution))
+eta_values <- as.numeric(names(full_bayes$posterior$tausq.rel$distribution))
+phi_prior <- exp(-phi_values/150)
+phi_prior <- phi_prior/sum(phi_prior)
+par(mfrow = c(1, 2), mar = c(4, 4, 2.5, 0.5))
+plot(phi_values, full_bayes$posterior$phi$distribution, type = "h", lwd = 2,
+     xlab = "Range (km)", ylab = "Probability", main = "Range: prior and posterior",
+     col = "#267A8A", ylim = c(0, max(phi_prior,
+                                      full_bayes$posterior$phi$distribution)))
+lines(phi_values, phi_prior, col = "#C45A33", lty = 2, lwd = 2)
+legend("topright", c("Posterior", "Prior"), col = c("#267A8A", "#C45A33"),
+       lty = c(1, 2), bty = "n", cex = 0.8)
+plot(eta_values, full_bayes$posterior$tausq.rel$distribution, type = "h", lwd = 2,
+     xlab = "Relative nugget", ylab = "Probability", main = "Relative nugget",
+     col = "#267A8A")
+abline(h = 1/length(eta_values), col = "#C45A33", lty = 2, lwd = 2)
+```
+
+The posterior places much more weight on a narrower range of values than
+the priors, especially for the relative nugget. However, the range still
+has a right tail. A proper posterior distribution does not automatically
+mean that every parameter is precisely identified.
+
+# Numerical checks and prior sensitivity
+
+```{r simulation-check}
+simulation_check <- rbind(
+  First_10000 = scores(dat$rain, cv_half1),
+  Second_10000 = scores(dat$rain, cv_half2))
+knitr::kable(simulation_check, digits = 2)
+edge <- apply(rbind(do.call(rbind, boundary_cv), boundary(full_bayes)), 2, max)
+knitr::kable(data.frame(Boundary = names(edge),
+                        Max_posterior_percent = 100*edge),
+             digits = 5, row.names = FALSE)
+```
+
+The two halves of the predictive simulations give Interval Scores differing
+by **`r fmt(abs(diff(simulation_check[, "IS95"])))` mm**. This is a check
+on simulation noise, not on uncertainty caused by the limited station
+sample. The small posterior masses at the upper grid limits suggest that
+those limits are not dominating these fits. Zero nugget is a valid boundary;
+its probability is reported rather than silently excluded.
+
+```{r sensitivity, cache=TRUE, cache.vars=c("finer","broader"), cache.extra=analysis_key}
+finer <- bayes_fit(dat, seed = 5401, prior = make_prior(step = 10),
+                   draws = 50000)
+broader <- bayes_fit(dat, seed = 5402, prior = make_prior(range_scale = 300),
+                     draws = 50000)
+```
+
+```{r sensitivity-table}
+sensitivity_table <- do.call(rbind, lapply(
+  list(Main = full_bayes, Finer_grid = finer, Broader_range_prior = broader),
+  function(b) {
+    s <- b$posterior$sample
+    slope <- quantile(s$beta1, c(0.025, 0.5, 0.975), names = FALSE)
+    range <- quantile(s$phi, c(0.025, 0.5, 0.975), names = FALSE)
+    data.frame(Slope_median = slope[2],
+      Slope_95 = paste(fmt(slope[1], 3), "to", fmt(slope[3], 3)),
+      Range_median = range[2],
+      Range_95 = paste(range[1], "to", range[3]))
+  }))
+knitr::kable(sensitivity_table, digits = 3)
+```
+
+The finer grid halves the range and relative-nugget steps while retaining
+their bounds and prior forms. The main conclusions about the elevation
+effect and broad range uncertainty remain similar. With a broader range
+prior, the posterior range shifts upwards and its interval extends further.
+The elevation estimate changes much less. This shows where prior choice
+matters. These are full-data parameter sensitivity checks, not alternative
+priors selected by their validation scores, and they do not establish
+stability of every predictive quantity.
+
+# Prediction maps on the Homework 4 grid
+
+I refit on all 189 stations for mapping. The Bayesian intervals integrate
+uncertainty in the trend, partial sill, range and relative nugget, within
+the specified model. They do not integrate uncertainty about the choice
+of covariance family, transformation, stationarity or isotropy.
+
+```{r grid-prediction, cache=TRUE, cache.vars=c("ml_grid","bayes_grid"), cache.extra=analysis_key}
+ml_grid <- predict_ml(dat, grid, full_ml)
+bayes_grid <- ml_grid[, 1:3]
+# Small batches limit memory; every batch uses all 189 training stations.
+groups <- split(seq_len(nrow(grid)), ceiling(seq_len(nrow(grid))/200))
+for (j in seq_along(groups)) {
+  i <- groups[[j]]
+  b <- bayes_fit(dat, grid[i, ], seed = 5300+j, draws = 10000)
+  bayes_grid[i, ] <- bayes_summary(b)
+}
+stopifnot(all(is.finite(as.matrix(bayes_grid))),
+          all(bayes_grid$Lower > 0),
+          all(bayes_grid$Lower < bayes_grid$Upper))
+```
+
+Each batch is fitted to the same observations and original priors. The
+resulting summaries are pointwise. I do not combine the batches into a
+joint simulated field or use them for simultaneous spatial probabilities.
+
+```{r grid-summary}
+hull <- chull(dat$x, dat$y)
+outside_hull <- sp::point.in.polygon(
+  grid$x, grid$y, dat$x[hull], dat$y[hull]) == 0
+outside_elevation <- grid$Quota < min(dat$Quota) | grid$Quota > max(dat$Quota)
+ml_width <- ml_grid$Upper-ml_grid$Lower
+bayes_width <- bayes_grid$Upper-bayes_grid$Lower
+map_summary <- data.frame(Method = c("Likelihood", "Bayesian"),
+  Min_median = c(min(ml_grid$Median), min(bayes_grid$Median)),
+  Max_median = c(max(ml_grid$Median), max(bayes_grid$Median)),
+  Median_width = c(median(ml_width), median(bayes_width)))
+knitr::kable(map_summary, digits = 1, row.names = FALSE)
+```
+
+The median maps have similar broad patterns. Bayesian intervals are wider
+at **`r fmt(100*mean(bayes_width > ml_width), 1)`%** of grid points, but
+there is no rule that a Bayesian interval must always be wider. It depends
+on the data, prior and fitted covariance distribution. Differences between
+the two maps are not prediction errors: grid truth is unavailable, which
+is why the comparison scores come from held-out stations.
+
+```{r map-functions}
+draw_outlines <- function() {
+  lines(data_env$Bas$XUTM/1000, data_env$Bas$YUTM/1000,
+        col = "grey45", lwd = 0.7)
+  lines(data_env$Cal$XUTM/1000, data_env$Cal$YUTM/1000,
+        col = "grey45", lwd = 0.7)
+}
+draw_map <- function(values, breaks, title) {
+  colours <- hcl.colors(length(breaks)-1, "YlGnBu", rev = TRUE)
+  plot(grid$x, grid$y, type = "n", asp = 1,
+       xlim = range(c(grid$x, dat$x)), ylim = range(c(grid$y, dat$y)),
+       xlab = "Easting (km)", ylab = "Northing (km)", main = title)
+  points(grid$x, grid$y, pch = 15, cex = 0.55,
+         col = colours[cut(values, breaks, include.lowest = TRUE)])
+  draw_outlines()
+  points(dat$x, dat$y, pch = 20, cex = 0.18)
+  points(grid$x[outside_hull], grid$y[outside_hull], pch = 4,
+         cex = 0.38, col = "grey25")
+  points(grid$x[outside_elevation], grid$y[outside_elevation],
+         pch = 2, cex = 0.48, col = "#B33A26")
+  legend("bottomleft", paste(head(breaks, -1), tail(breaks, -1), sep = " to "),
+         fill = colours, title = "mm", bty = "n", cex = 0.75)
+}
+```
+
+```{r comparison-maps, fig.width=7.5, fig.height=8}
+median_breaks <- pretty(range(ml_grid$Median, bayes_grid$Median), n = 6)
+width_breaks <- pretty(range(ml_width, bayes_width), n = 6)
+par(mfrow = c(2, 2), mar = c(3.5, 3.5, 2.3, 0.5), mgp = c(2, 0.6, 0))
+draw_map(ml_grid$Median, median_breaks, "Likelihood predictive median")
+draw_map(bayes_grid$Median, median_breaks, "Bayesian predictive median")
+draw_map(ml_width, width_breaks, "Likelihood 95% interval width")
+draw_map(bayes_width, width_breaks, "Bayesian 95% interval width")
+```
+
+The two median maps share a scale, and the two width maps share another.
+Black dots are stations, crosses mark the **`r sum(outside_hull)` points
+outside their convex hull**, and red triangles mark the
+**`r sum(outside_elevation)` points outside the observed elevation range**.
+The groups may overlap. The supplied grid reaches 1,995 m, while the
+highest observed station is 1,369 m. Bayesian inference does not remove
+the need to be cautious about those extrapolated predictions.
+
+```{r bayesian-limits, fig.width=7.5, fig.height=5.2}
+limit_breaks <- pretty(range(bayes_grid$Lower, bayes_grid$Upper), n = 6)
+par(mfrow = c(1, 2), mar = c(4, 4, 2.5, 0.5))
+draw_map(bayes_grid$Lower, limit_breaks, "Lower 95% predictive limit")
+draw_map(bayes_grid$Upper, limit_breaks, "Upper 95% predictive limit")
+```
+
+These are **posterior predictive limits for rainfall**, not credible
+intervals for a parameter. The log transformation keeps them positive.
+Wider intervals in wet areas partly reflect the back-transformation:
+the same uncertainty on the log scale gives a larger width in mm at a
+higher rainfall level. Width is therefore not a map of station density alone.
+
+# What I would take from the comparison
+
+For 1970, the Bayesian fit gives a similar rainfall pattern to Homework 4,
+with a modest improvement in the held-out Interval Score. The point
+predictions are very similar, and the coverage improvement is small.
+I would not claim that one successful split proves general superiority.
+
+The main inferential benefit is that the Bayesian output makes parameter
+uncertainty visible. The elevation effect is clearly positive under these
+priors, while the range remains much less precise and more prior-sensitive.
+Posterior predictive intervals propagate that parameter uncertainty,
+along with spatial and nugget variation. They still depend on the model,
+and their observed coverage remains below 95%.
+
+The limits are one random validation partition, the model structure already
+chosen in Homework 4, the finite parameter grid, prior choices, and the
+Gaussian log-scale approximation. Spatially separated validation and
+further prior or model checks would be useful extensions. The Bayesian
+method changes how uncertainty is represented; it does not make those
+checks unnecessary.
+
+# Sources and software
+
+I used the revised Homework 4 model and the supplied course notes
+*Chapter6-11*, especially the distinction between parameter and predictive
+uncertainty and the Interval Score in Section 10.3. I also checked the
+`geoR` documentation and implementation of `krige.bayes`, `prior.control`,
+`model.control` and `output.control`. In particular, the priors use a
+relative nugget, the trend has a flat prior, and the observation target
+requires `signal = FALSE`.
+
+```{r versions}
+packages <- c("geoR", "sp", "knitr", "rmarkdown")
+knitr::kable(data.frame(Component = c("R", packages),
+  Version = c(as.character(getRversion()),
+    vapply(packages, function(p) as.character(packageVersion(p)),
+           character(1)))), row.names = FALSE)
+```
