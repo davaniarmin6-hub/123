@@ -61,3 +61,18 @@ The covariance family and trend were selected in Homework 4. This comparison
 is conditional on that structure and uses one random five-fold split; it is
 not a new independent assessment of the earlier selection process. The report
 makes no claim that Bayesian kriging is universally better.
+
+## Revision after the range-prior feedback
+
+The 22 November revision retains the main prior and explains it in terms of
+actual residual correlations, rather than relying on the 610 km grid cutoff.
+It adds the study-area distances, the spherical half-correlation distance,
+and posterior correlation and covariance summaries at 50, 100 and 150 km.
+The calculations keep each draw's range, sill and nugget together.
+
+The former wider-prior check is replaced by a shorter-range prior with an
+exponential scale of 75 km. It is a full-data sensitivity check, not a new
+validation comparison. The report explicitly shows that long-distance
+correlation is prior-sensitive. The main prior, model, validation predictions
+and maps are unchanged. No years, covariance families or validation schemes
+were added. The report's wording has also been shortened and simplified.

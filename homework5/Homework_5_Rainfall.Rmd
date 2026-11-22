@@ -2,7 +2,7 @@
 title: "Homework 5: Bayesian rainfall prediction in 1970"
 author: "Mojtaba Alinejad"
 subtitle: "Spatial statistics 2026–2027 · Professor: Dr. Lasinio"
-date: "21 November 2026"
+date: "22 November 2026"
 output:
   pdf_document:
     toc: true
@@ -45,16 +45,12 @@ log-rainfall model, elevation trend and spherical residual covariance.
 The new question is how the estimates and prediction intervals change
 when I account for parameter uncertainty with Bayesian kriging.
 
-The distinction is that maximum likelihood uses estimated covariance
-parameters in the prediction formula. Bayesian prediction averages over
-their posterior distribution. It still depends on the chosen trend,
-covariance family and priors; it does not remove those assumptions.
-
-For a fair comparison I use the same observations, grid, five validation
-folds and prediction target. I refit the likelihood model and the Bayesian
-model within each training set. The structure selected in Homework 4 is
-held fixed for both. This is a comparison **conditional on that structure**,
-not an independent nested assessment of the earlier model-selection process.
+Likelihood kriging uses fitted covariance parameters. Bayesian kriging
+allows them to vary according to their posterior distribution. I compare
+the two methods on the same data, grid and five validation folds, refitting
+both within each training set. Both predict a new observation, including
+the nugget. I keep the model structure chosen in Homework 4, so this
+comparison does not test the earlier model-selection step independently.
 
 ## Data and the prediction target
 
@@ -110,12 +106,9 @@ The spherical correlation reaches zero at distance $\phi$. Stationarity
 and isotropy refer to the residual process after accounting for elevation.
 The Gaussian approximation is on the log scale, not the rainfall scale.
 
-I use `geoR::krige.bayes`. It considers a grid of range and relative-nugget
-values and uses conjugate calculations for the remaining parameters.
-It can draw directly from this posterior approximation. This is not an
-MCMC analysis, so burn-in, trace plots and R-hat are not the relevant checks.
-I instead check simulation stability, parameter-grid resolution and prior
-sensitivity.
+I use `geoR::krige.bayes`. It works over a grid of range and relative-nugget
+values and draws from the resulting posterior. This is direct simulation,
+not MCMC. I check simulation noise, grid resolution and prior sensitivity.
 
 ## My prior choices
 
@@ -133,11 +126,10 @@ The flat trend prior does not favour a particular intercept or elevation
 effect. It is an improper prior, but gives a proper posterior here because
 the trend matrix has full rank and the remaining priors are proper.
 The partial-sill prior is a scaled inverse-chi-squared prior.
-The range prior gives more weight to shorter ranges but allows dependence
-over much of the study area. These are modelling choices, not uniquely
-correct or completely non-informative priors. The values are fixed across
-validation folds; I do not estimate them from held-out rainfall or choose
-them by the best validation score.
+The range prior favours shorter ranges but has a long tail. I examine what
+this means for rainfall dependence in Section 5. These are modelling choices,
+not uniquely correct priors. I keep them fixed across validation folds and
+do not use held-out rainfall to set their values.
 
 ```{r bayesian-functions}
 make_g <- function(d) {
@@ -201,15 +193,13 @@ the corresponding rainfall-scale quantiles.
 
 ## Credible intervals and posterior predictive intervals
 
-A **95% credible interval for a parameter** describes posterior uncertainty
-about that parameter, conditional on the data and model. For example, it
-can describe the unknown elevation coefficient, partial sill or range.
+A **95% credible interval** gives uncertainty about a parameter, such as
+the elevation coefficient or range, given the data and model.
 
-A **95% posterior predictive interval** describes an unobserved rainfall
-value at a new location. It includes parameter uncertainty and remaining
-spatial variation, plus the nugget for the observation target used here.
-These are the intervals shown on the Bayesian maps. The Homework 4
-intervals remain approximate likelihood-based prediction intervals.
+A **95% posterior predictive interval** concerns rainfall at a new location.
+It includes parameter uncertainty, spatial variation and the nugget. These
+are the intervals on the Bayesian maps. Homework 4 instead uses approximate
+likelihood-based prediction intervals.
 
 I use central equal-tailed intervals, with 2.5% in each tail. They are not
 HPD intervals. The predictive intervals are pointwise; they do not provide
@@ -340,7 +330,7 @@ The Bayesian Interval Score is **`r fmt(comparison[2, "IS95"])` mm**, compared
 with **`r fmt(comparison[1, "IS95"])` mm** for likelihood kriging. This is
 a decrease of **`r fmt(improvement)` mm**, or
 **`r fmt(100*improvement/comparison[1, "IS95"])`%**. The result favours the
-Bayesian intervals on this split, but the difference is moderate.
+Bayesian intervals on this split, but the improvement is small.
 
 Coverage changes from **`r fmt(comparison[1, "Coverage"])`%** to
 **`r fmt(comparison[2, "Coverage"])`%**; the Bayesian intervals still do not
@@ -388,10 +378,9 @@ for (method in c("Likelihood", "Bayesian")) {
 }
 ```
 
-Both methods reproduce the broad pattern and still miss some individual
-stations. Adding parameter uncertainty changes the intervals more clearly
-than it changes the point predictions. It is not evidence that Bayesian
-kriging is always better for rainfall data.
+Both methods follow the broad pattern but miss some individual stations.
+Their point predictions are very similar; the larger change is in the
+prediction intervals.
 
 # Parameter precision from credible intervals
 
@@ -426,44 +415,156 @@ about **`r fmt(elevation_change[2])`%**, with a 95% credible interval of
 **`r fmt(elevation_change[1])`% to `r fmt(elevation_change[3])`%**.
 This is a model-based association, not a causal effect.
 
-The range is less precise: its posterior median is
-**`r fmt(q["Range_km", 2], 0)` km**, with a credible interval from
-**`r fmt(q["Range_km", 1], 0)` to `r fmt(q["Range_km", 3], 0)` km**.
-The likelihood estimate of **`r fmt(full_ml$cov.pars[2], 1)` km** is only
-one point within this uncertainty. A broad range interval means that the
-data do not identify a single correlation distance sharply.
+The range interval is wide, so the data do not identify one distance
+clearly. Range and partial sill have posterior correlation
+**`r fmt(cor(post$phi, post$sigmasq))`**. I examine their joint effect below.
+Partial sill and nugget are log-scale variances; their interval widths
+cannot be compared directly with a range measured in km. The ML column
+contains point estimates, not confidence intervals.
 
-Partial sill and nugget are variances on the **log scale**. Their credible
-interval widths should not be compared numerically with the range width
-in km. Range and partial sill have posterior correlation
-**`r fmt(cor(post$phi, post$sigmasq))`**: different combinations can explain
-similar spatial patterns. The ML column is a point-estimate reference,
-not a likelihood confidence interval. I do not infer that one method is
-more precise merely by comparing an interval with a point.
+# What the range means for this rainfall study
 
-```{r prior-posterior, fig.width=8, fig.height=3.7}
-phi_values <- as.numeric(names(full_bayes$posterior$phi$distribution))
-eta_values <- as.numeric(names(full_bayes$posterior$tausq.rel$distribution))
+Based on the feedback, I now check the correlations implied by the range,
+not just whether the posterior reaches the edge of its grid.
+
+## Geography and the prior
+
+```{r range-geography}
+pair_distance <- as.numeric(dist(dat[c("x", "y")]))
+phi_values <- seq(10, 610, 20)
+eta_values <- seq(0, 1.5, 0.05)
 phi_prior <- exp(-phi_values/150)
 phi_prior <- phi_prior/sum(phi_prior)
-par(mfrow = c(1, 2), mar = c(4, 4, 2.5, 0.5))
-plot(phi_values, full_bayes$posterior$phi$distribution, type = "h", lwd = 2,
-     xlab = "Range (km)", ylab = "Probability", main = "Range: prior and posterior",
-     col = "#267A8A", ylim = c(0, max(phi_prior,
-                                      full_bayes$posterior$phi$distribution)))
-lines(phi_values, phi_prior, col = "#C45A33", lty = 2, lwd = 2)
-legend("topright", c("Posterior", "Prior"), col = c("#267A8A", "#C45A33"),
-       lty = c(1, 2), bty = "n", cex = 0.8)
-plot(eta_values, full_bayes$posterior$tausq.rel$distribution, type = "h", lwd = 2,
-     xlab = "Relative nugget", ylab = "Probability", main = "Relative nugget",
-     col = "#267A8A")
-abline(h = 1/length(eta_values), col = "#C45A33", lty = 2, lwd = 2)
+prior_median_phi <- phi_values[which(cumsum(phi_prior) >= 0.5)[1]]
+spherical_cor <- function(h, phi) {
+  u <- h/phi
+  ifelse(u < 1, 1-1.5*u+0.5*u^3, 0)
+}
+half_fraction <- uniroot(function(u) spherical_cor(u, 1)-0.5,
+                         c(0, 1))$root
 ```
 
-The posterior places much more weight on a narrower range of values than
-the priors, especially for the relative nugget. However, the range still
-has a right tail. A proper posterior distribution does not automatically
-mean that every parameter is precisely identified.
+The stations cover Basilicata and Calabria. Their north-south span is
+**`r fmt(diff(range(dat$y)), 0)` km** and their east-west span is
+**`r fmt(diff(range(dat$x)), 0)` km**. The greatest station separation is
+**`r fmt(max(pair_distance), 0)` km**. Distances of 50, 100 and 150 km
+therefore describe different parts of this regional study, rather than
+only nearby stations. These distances use the coordinate units stated above.
+
+For a spherical model, the range is where residual correlation reaches
+zero. It is not a distance over which correlation stays strong. Correlation
+in the spatial component falls to one-half at about **0.347 times the range**.
+A range of 150 km therefore gives a half-correlation distance of about
+**`r fmt(150*half_fraction, 0)` km**. Adding the nugget reduces correlation
+between different stations further.
+
+The prior puts **`r fmt(100*sum(phi_prior[phi_values > 100]), 1)`%** of its
+probability above 100 km. However, its median range of
+**`r prior_median_phi` km** corresponds to a half-correlation distance of only
+**`r fmt(prior_median_phi*half_fraction, 0)` km** in the spatial component.
+About **`r fmt(100*sum(phi_prior[phi_values > max(pair_distance)]), 1)`%**
+allows ranges beyond the greatest observed separation. I treat this as an
+uncertain tail of the prior, not as evidence for dependence beyond the study area.
+
+Annual rainfall totals can share broad weather conditions. Mountains and
+coastal exposure can also create differences between locations, even after
+allowing for elevation. This is my reason for allowing both local and
+regional dependence, while giving shorter ranges more weight. It does not
+justify assuming strong correlation across the whole region. The 610 km
+endpoint is a generous numerical limit, not an estimated storm size or a
+known physical rainfall scale.
+
+## Correlations at 50, 100 and 150 km
+
+For distance $h>0$, I calculate three quantities for every posterior draw:
+\[
+ r(h;\phi)=\begin{cases}
+ 1-1.5h/\phi+0.5(h/\phi)^3,&h<\phi,\\
+ 0,&h\geq\phi,
+ \end{cases}
+ \qquad C(h)=\sigma^2 r(h;\phi),\qquad
+ \rho(h)=\frac{C(h)}{\sigma^2+\tau^2}
+        =\frac{r(h;\phi)}{1+\eta}.
+\]
+Here $r$ is the correlation of the spatial component, $C$ is its covariance,
+and $\rho$ is the residual correlation between two different observations,
+including the nugget. These are correlations of **log-rainfall residuals
+after the elevation trend**, not correlations of raw rainfall. They describe
+the residual process conditional on a parameter draw, not the full predictive
+correlation after also averaging over uncertain trend coefficients.
+
+```{r range-correlations}
+summary_95 <- function(x) {
+  q <- quantile(x, c(0.025, 0.5, 0.975), names = FALSE)
+  sprintf("%.3f [%.3f, %.3f]", q[2], q[1], q[3])
+}
+distances <- c(50, 100, 150)
+residual_cor <- function(h, s) spherical_cor(h, s$phi)/(1+s$tausq.rel)
+range_table <- do.call(rbind, lapply(distances, function(h) {
+  r <- spherical_cor(h, post$phi)
+  data.frame(Distance_km = h,
+    Pairs_within_10km = sum(abs(pair_distance-h) <= 10),
+    Correlation = summary_95(residual_cor(h, post)),
+    Covariance = summary_95(post$sigmasq*r))
+}))
+knitr::kable(range_table, row.names = FALSE)
+```
+
+Each entry gives the posterior median and a central 95% credible interval.
+Covariance is in squared log-rainfall units. Pair counts show how many
+observed pairs are near each distance; pairs sharing a station are not
+independent observations.
+
+At 50 km, the median residual correlation is about **0.45**, with a 95%
+interval of **0.19 to 0.75**. At 100 km it is about **0.13**, but the interval
+runs from **0 to 0.56**. At 150 km the median is **zero**, while the upper
+limit is about **0.39**. Thus a median range of 150 km does not mean strong
+correlation at 150 km. Longer-distance dependence remains uncertain.
+
+I keep each draw's range, partial sill and nugget together. The partial
+sill cancels in the correlation formula when the nugget is expressed as
+$\eta\sigma^2$, but it does not cancel in the covariance. The positive
+range-sill association means that draws with longer ranges often also
+have larger covariances. Multiplying separate parameter summaries would
+lose this information; the covariance intervals above use the joint draws.
+
+```{r prior-correlation-check}
+prior_check <- do.call(rbind, lapply(distances, function(h) {
+  prior_rho <- outer(spherical_cor(h, phi_values), 1+eta_values, "/")
+  data.frame(Distance_km = h,
+    Prior_percent = 100*sum(phi_prior*rowMeans(prior_rho > 0.2)),
+    Posterior_percent = 100*mean(residual_cor(h, post) > 0.2))
+}))
+knitr::kable(prior_check, digits = 1, row.names = FALSE)
+```
+
+This table gives the probability that residual correlation exceeds **0.2**.
+I use 0.2 only as an easy reference, not as a scientific cutoff. In
+particular, the prior probability of correlation above 0.2 at 100 km is
+about **23%**, even though about half the prior range values exceed 100 km.
+At 150 km the corresponding prior probability is about **11%**. This makes
+the actual dependence allowed by the prior clearer than its range limits alone.
+
+```{r residual-correlation-plot, fig.width=7.5, fig.height=3.8}
+h <- seq(1, 350, by = 1)
+corr_band <- sapply(h, function(d) {
+  quantile(residual_cor(d, post), c(0.025, 0.5, 0.975), names = FALSE)
+})
+plot(h, corr_band[2, ], type = "n", ylim = c(0, 1),
+     xlab = "Distance (km)", ylab = "Residual correlation")
+polygon(c(h, rev(h)), c(corr_band[1, ], rev(corr_band[3, ])),
+        col = "#D4E8ED", border = NA)
+lines(h, corr_band[2, ], col = "#267A8A", lwd = 2)
+abline(v = distances, col = "grey65", lty = 3)
+legend("topright", c("Posterior median", "Pointwise 95% credible band"),
+       col = c("#267A8A", "#D4E8ED"), lwd = c(2, 8), bty = "n")
+```
+
+The band describes uncertainty about residual correlation at each distance.
+It is not a rainfall prediction interval or a simultaneous band. I start
+above zero because independent nugget variation causes a jump between
+correlation at the same observation and at two very close observations.
+
 
 # Numerical checks and prior sensitivity
 
@@ -482,19 +583,21 @@ The two halves of the predictive simulations give Interval Scores differing
 by **`r fmt(abs(diff(simulation_check[, "IS95"])))` mm**. This is a check
 on simulation noise, not on uncertainty caused by the limited station
 sample. The small posterior masses at the upper grid limits suggest that
-those limits are not dominating these fits. Zero nugget is a valid boundary;
-its probability is reported rather than silently excluded.
+those limits are not cutting off much posterior mass. This is only a
+numerical check: it does not show that the correlation scales are physically
+plausible. That question is addressed by the distance-based checks above.
+Zero nugget is allowed, so I report its boundary probability too.
 
-```{r sensitivity, cache=TRUE, cache.vars=c("finer","broader"), cache.extra=analysis_key}
+```{r sensitivity, cache=TRUE, cache.vars=c("finer","shorter"), cache.extra=analysis_key}
 finer <- bayes_fit(dat, seed = 5401, prior = make_prior(step = 10),
                    draws = 50000)
-broader <- bayes_fit(dat, seed = 5402, prior = make_prior(range_scale = 300),
+shorter <- bayes_fit(dat, seed = 5403, prior = make_prior(range_scale = 75),
                      draws = 50000)
 ```
 
 ```{r sensitivity-table}
 sensitivity_table <- do.call(rbind, lapply(
-  list(Main = full_bayes, Finer_grid = finer, Broader_range_prior = broader),
+  list(Main = full_bayes, Finer_grid = finer, Shorter_range_prior = shorter),
   function(b) {
     s <- b$posterior$sample
     slope <- quantile(s$beta1, c(0.025, 0.5, 0.975), names = FALSE)
@@ -507,21 +610,49 @@ sensitivity_table <- do.call(rbind, lapply(
 knitr::kable(sensitivity_table, digits = 3)
 ```
 
-The finer grid halves the range and relative-nugget steps while retaining
-their bounds and prior forms. The main conclusions about the elevation
-effect and broad range uncertainty remain similar. With a broader range
-prior, the posterior range shifts upwards and its interval extends further.
-The elevation estimate changes much less. This shows where prior choice
-matters. These are full-data parameter sensitivity checks, not alternative
-priors selected by their validation scores, and they do not establish
-stability of every predictive quantity.
+The finer grid checks numerical resolution. The second prior is a more
+useful check of the geographical assumption: it halves the exponential
+scale from 150 to 75 km, keeping the same support and all other priors.
+It gives shorter ranges more weight instead of broadening the prior again.
+The 75 km scale is a sensitivity choice, not a known rainfall constant.
+
+```{r shorter-prior-correlations}
+shorter_table <- do.call(rbind, lapply(distances, function(h) {
+  data.frame(Distance_km = h,
+    Main_prior = summary_95(residual_cor(h, post)),
+    Shorter_prior = summary_95(residual_cor(h, shorter$posterior$sample)))
+}))
+knitr::kable(shorter_table, row.names = FALSE, booktabs = TRUE,
+  format = if (knitr::is_latex_output()) "latex" else "pipe")
+```
+
+With the shorter-range prior, the posterior median range is **130 km**
+and its 95% interval is **70 to 290 km**, compared with **150 km** and
+**90 to 370 km** in the main fit. At 100 km, the median residual correlation
+falls from about **0.13 to 0.06**, and its upper limit falls from **0.56 to
+0.45**. The elevation estimate changes little. The long-distance part of
+the model is therefore sensitive to the range prior; I do not call it robust.
+
+I retain the original prior as a broad working choice for annual regional
+rainfall. Its typical ranges imply much shorter distances of strong
+correlation, and its long tail allows a possible regional component without
+making it certain. I have no local evidence here that would justify ruling
+out that component with a sharper prior. However, this is a modelling
+judgement, not proof that every admitted scale is physically correct.
+Mountains and coastal exposure may also create directional patterns that
+this isotropic model misses.
+
+The main prior and prediction model have not changed, so the validation
+scores and prediction maps remain those of the main fit. The shorter prior
+is a full-data interpretation check, not a second predictive comparison.
+I do not claim that the scores or maps would be unchanged under it, and I
+have not selected a prior using held-out rainfall.
 
 # Prediction maps on the Homework 4 grid
 
-I refit on all 189 stations for mapping. The Bayesian intervals integrate
-uncertainty in the trend, partial sill, range and relative nugget, within
-the specified model. They do not integrate uncertainty about the choice
-of covariance family, transformation, stationarity or isotropy.
+For the maps I fit the model to all 189 stations. The Bayesian intervals
+include uncertainty in its parameters, but not uncertainty about the
+chosen transformation, trend or covariance family.
 
 ```{r grid-prediction, cache=TRUE, cache.vars=c("ml_grid","bayes_grid"), cache.extra=analysis_key}
 ml_grid <- predict_ml(dat, grid, full_ml)
@@ -538,9 +669,9 @@ stopifnot(all(is.finite(as.matrix(bayes_grid))),
           all(bayes_grid$Lower < bayes_grid$Upper))
 ```
 
-Each batch is fitted to the same observations and original priors. The
-resulting summaries are pointwise. I do not combine the batches into a
-joint simulated field or use them for simultaneous spatial probabilities.
+Every batch uses the same full dataset and original priors. I use the
+results only for pointwise summaries, not for joint probabilities across
+the whole map.
 
 ```{r grid-summary}
 hull <- chull(dat$x, dat$y)
@@ -626,19 +757,16 @@ with a modest improvement in the held-out Interval Score. The point
 predictions are very similar, and the coverage improvement is small.
 I would not claim that one successful split proves general superiority.
 
-The main inferential benefit is that the Bayesian output makes parameter
-uncertainty visible. The elevation effect is clearly positive under these
-priors, while the range remains much less precise and more prior-sensitive.
-Posterior predictive intervals propagate that parameter uncertainty,
-along with spatial and nugget variation. They still depend on the model,
-and their observed coverage remains below 95%.
+The elevation effect is positive, but the range is less certain. The new
+checks show moderate residual correlation at 50 km and weaker, less certain
+correlation at 100 and 150 km. The shorter-range prior reduces the evidence
+for long-distance dependence. I retain the broad prior as a working choice,
+while making this sensitivity clear.
 
-The limits are one random validation partition, the model structure already
-chosen in Homework 4, the finite parameter grid, prior choices, and the
-Gaussian log-scale approximation. Spatially separated validation and
-further prior or model checks would be useful extensions. The Bayesian
-method changes how uncertainty is represented; it does not make those
-checks unnecessary.
+The comparison uses one random split and the model selected in Homework 4.
+The results still depend on the priors and on the Gaussian, stationary and
+isotropic residual model. The Bayesian intervals include parameter
+uncertainty, but their observed coverage is still below 95%.
 
 # Sources and software
 
@@ -646,7 +774,8 @@ I used the revised Homework 4 model and the supplied course notes
 *Chapter6-11*, especially the distinction between parameter and predictive
 uncertainty and the Interval Score in Section 10.3. I also checked the
 `geoR` documentation and implementation of `krige.bayes`, `prior.control`,
-`model.control` and `output.control`. In particular, the priors use a
+`model.control`, `output.control` and the spherical correlation in
+`cov.spatial`. In particular, the priors use a
 relative nugget, the trend has a flat prior, and the observation target
 requires `signal = FALSE`.
 
